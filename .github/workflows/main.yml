@@ -169,7 +169,7 @@ jobs:
                     {DEV_TOOLS && <>
                       <Text style={{ color: t.sub, marginTop: 16 }}>DEVELOPER (hidden in release builds)</Text>
                       {group([row('Dev Mode: Toggle Pro Status', pro ? 'Pro is ON' : 'Pro is OFF', () => { setPro(!pro); if (pro) setGeo(false); }, <Switch value={pro} onValueChange={v => { setPro(v); if (!v) setGeo(false); }} />),
-                        ...['CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks'].map(n => row(`📍 Simulate: Walking into ${n}`, '', () => notifyNear([n])),
+                        ...['CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks'].map(n => row(`📍 Simulate: Walking into ${n}`, '', () => notifyNear([n]))),
                         row('📍 Simulate: Mall with 3 stores', 'CVS + Target + Starbucks', () => notifyNear(['CVS', 'Target', 'Starbucks']))])}
                     </>}
                   </>}
