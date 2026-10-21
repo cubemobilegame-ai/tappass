@@ -1,0 +1,35 @@
+name: Organize files
+
+# Wgrywasz pliki "płasko" do głównego folderu (Add file -> Upload files),
+# a ten workflow sam przenosi je do właściwych folderów i robi commit.
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  organize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Move files into folders
+        run: |
+          mv_to() { mkdir -p "$(dirname "$2")"; git mv -f "$1" "$2"; }
+          for f in *; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              # ikony -> assets/
+              icon.png|adaptive-icon.png|splash-icon.png) mv_to "$f" "assets/$f" ;;
+              # dowolny plik z "__" w nazwie: podwójny podkreślnik = folder
+              # np. assets__icon.png -> assets/icon.png
+              *__*) mv_to "$f" "$(echo "$f" | sed 's/__/\//g')" ;;
+            esac
+          done
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions"
+            git config user.email "actions@users.noreply.github.com"
+            git commit -m "Organize files into folders"
+            git push
+          fi
