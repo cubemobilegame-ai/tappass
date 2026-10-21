@@ -1,9 +1,0 @@
-node_modules/
-.expo/
-android/
-ios/
-dist/
-.env
-*.keystore
-*.jks
-*.b64
