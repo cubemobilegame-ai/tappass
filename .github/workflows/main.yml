@@ -1,0 +1,606 @@
+# TapPass: jeden plik, który sam tworzy cały projekt i buduje APK.
+# Wklej go w: repo -> Actions -> "set up a workflow yourself" -> Commit.
+name: Build TapPass APK
+
+on:
+  workflow_dispatch:          # przycisk "Run workflow"
+
+permissions:
+  contents: write             # żeby wrzucić APK do zakładki Releases
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}   # sekrety są opcjonalne
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Bootstrap Expo base
+        run: |
+          if [ ! -f package.json ]; then
+            npx --yes create-expo-app@latest _base --template blank --no-install
+            cp _base/package.json .
+            if [ -f _base/index.js ]; then cp _base/index.js .; fi
+            rm -rf _base
+          fi
+
+      - name: Write TapPass source files
+        run: |
+          mkdir -p assets
+          cat > App.js <<'TAPPASS_EOF'
+          import React, { useEffect, useState } from 'react';
+          import { View, Text, Pressable, Modal, TextInput, FlatList, ScrollView, Switch, Alert, useColorScheme } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import AsyncStorage from '@react-native-async-storage/async-storage';
+          import * as Notifications from 'expo-notifications';
+          import * as Brightness from 'expo-brightness';
+          import * as ImagePicker from 'expo-image-picker';
+          import { CameraView, useCameraPermissions } from 'expo-camera';
+          import Svg, { Rect } from 'react-native-svg';
+          import QRCode from 'react-native-qrcode-svg';
+          import JsBarcode from 'jsbarcode';
+          import { STORES } from './stores';
+          import { askPermissions, refreshGeofences, stopGeo, notifyNear } from './geo';
+
+          // dev tools (Pro switch + geofence simulator) show in dev builds, or in any build with EXPO_PUBLIC_DEV_TOOLS=1
+          const DEV_TOOLS = __DEV__ || process.env.EXPO_PUBLIC_DEV_TOOLS === '1';
+          const FREE_LIMIT = 3;
+          const FMT = { ean13: 'EAN13', ean8: 'EAN8', upc_a: 'UPC', upc_e: 'UPCE', code39: 'CODE39', code128: 'CODE128', itf14: 'ITF', codabar: 'codabar' };
+          const SCAN_TYPES = ['qr', ...Object.keys(FMT)];
+
+          const brand = name => {
+            const s = STORES.find(x => x.n.toLowerCase() === name.trim().toLowerCase());
+            if (s) return s;
+            let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
+            return { n: name, c: `hsl(${h},55%,42%)`, l: (name.trim()[0] || '?').toUpperCase(), t: '#fff' };
+          };
+          const cleanCode = v => { v = v.replace(/[^\x20-\x7E]/g, '').trim(); return (/^[\d\s-]+$/.test(v) ? v.replace(/[\s-]/g, '') : v).slice(0, 120); };
+
+          function Tile({ name, size = 46 }) {
+            const b = brand(name);
+            return <View style={{ width: size, height: size, borderRadius: size / 4, backgroundColor: b.c, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: b.t, fontWeight: '800', fontSize: size * 0.5 }}>{b.l}</Text></View>;
+          }
+
+          function Barcode({ value, fmt, width }) {
+            let bars = null;
+            for (const f of [fmt || 'CODE128', 'CODE128']) {
+              try { const o = {}; JsBarcode(o, value, { format: f }); bars = o.encodings[0].data; break; } catch (e) {}
+            }
+            if (!bars) return <Text>Invalid code</Text>;
+            return <Svg width={width} height={170} viewBox={`0 0 ${bars.length} 1`} preserveAspectRatio="none">
+              {[...bars].map((b, i) => b === '1' ? <Rect key={i} x={i} y={0} width={1} height={1} fill="#000" /> : null)}</Svg>;
+          }
+          const Code = ({ card, width }) => <View style={{ backgroundColor: '#fff', padding: 16, borderRadius: 12, alignItems: 'center' }}>
+            {card.type === 'qr' ? <QRCode value={card.num} size={Math.min(width, 300)} /> : <Barcode value={card.num} fmt={card.fmt} width={width} />}
+            <Text style={{ color: '#000', marginTop: 8, fontSize: 16 }}>{card.type === 'qr' ? '' : card.num}</Text></View>;
+
+          export default function App() {
+            const dark = useColorScheme() === 'dark';
+            const t = { bg: dark ? '#000' : '#f2f2f7', card: dark ? '#1c1c1e' : '#fff', text: dark ? '#f5f5f7' : '#111', sub: '#8e8e93', accent: dark ? '#0a84ff' : '#007aff' };
+            const [ready, setReady] = useState(false);
+            const [cards, setCards] = useState([]);
+            const [pro, setPro] = useState(false);
+            const [geo, setGeo] = useState(false);
+            const [tab, setTab] = useState('w');
+            const [adding, setAdding] = useState(false);
+            const [paywall, setPaywall] = useState(false);
+            const [full, setFull] = useState(null);
+            const [pending, setPending] = useState(null);
+            const [choose, setChoose] = useState(null);
+            const [plan, setPlan] = useState('yearly');
+
+            useEffect(() => { (async () => {
+              const [c, p, g] = await Promise.all(['cards', 'pro', 'geo'].map(k => AsyncStorage.getItem(k)));
+              setCards(c ? JSON.parse(c) : []); setPro(p === '1'); setGeo(g === '1'); setReady(true);
+            })(); }, []);
+            useEffect(() => { if (!ready) return;
+              AsyncStorage.multiSet([['cards', JSON.stringify(cards)], ['pro', pro ? '1' : '0'], ['geo', geo ? '1' : '0']]);
+            }, [cards, pro, geo, ready]);
+            // keep geofences in sync (needs Pro + toggle + at least one card)
+            useEffect(() => { if (!ready) return; (async () => {
+              try { if (geo && pro && cards.length) await refreshGeofences(cards); else await stopGeo(); }
+              catch (e) { console.warn('geofence', e.message); }
+            })(); }, [geo, pro, cards, ready]);
+            // notification tap -> open card (also on cold start)
+            useEffect(() => {
+              const open = r => { const ids = r?.notification.request.content.data?.cardIds; if (ids?.length) setPending(ids); };
+              Notifications.getLastNotificationResponseAsync().then(open);
+              const sub = Notifications.addNotificationResponseReceivedListener(open);
+              return () => sub.remove();
+            }, []);
+            useEffect(() => { if (!pending || !ready) return;
+              const m = cards.filter(x => pending.includes(x.id));
+              if (m.length === 1) setFull(m[0]); else if (m.length) setChoose(m);
+              setPending(null);
+            }, [pending, ready, cards]);
+            // max brightness for scanners
+            useEffect(() => { if (!full) return; let prev;
+              (async () => { try { prev = await Brightness.getBrightnessAsync(); await Brightness.setBrightnessAsync(1); } catch (e) {} })();
+              return () => { if (prev !== undefined) Brightness.setBrightnessAsync(prev).catch(() => {}); };
+            }, [full]);
+
+            const tryAdd = () => (!pro && cards.length >= FREE_LIMIT) ? setPaywall(true) : setAdding(true);
+            const toggleGeo = async () => {
+              if (!pro) return setPaywall(true);
+              if (!geo && !(await askPermissions())) return Alert.alert('Permission needed', 'Allow location "Always" and notifications in system settings.');
+              setGeo(!geo);
+            };
+            const row = (title, sub, onPress, right) => <Pressable onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 0.5, borderColor: t.bg }}>
+              <View style={{ flex: 1 }}><Text style={{ color: t.text, fontSize: 17, fontWeight: '600' }}>{title}</Text>{sub ? <Text style={{ color: t.sub, fontSize: 13 }}>{sub}</Text> : null}</View>{right}</Pressable>;
+            const group = kids => <View style={{ backgroundColor: t.card, borderRadius: 14, marginVertical: 8, overflow: 'hidden' }}>{kids}</View>;
+            const geoRow = row('GPS Geo-alerts' + (pro ? '' : ' 🔒'), 'Show your card automatically near a store', toggleGeo, <Switch value={geo && pro} onValueChange={toggleGeo} />);
+
+            return (
+              <SafeAreaView style={{ flex: 1, backgroundColor: t.bg }}>
+                <ScrollView contentContainerStyle={{ padding: 16 }}>
+                  {tab === 'w' ? <>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                      <View><Text style={{ color: t.text, fontSize: 32, fontWeight: '800' }}>Wallet</Text>
+                        <Text onPress={() => setPaywall(true)} style={{ color: t.sub, fontWeight: '700' }}>{pro ? 'PRO' : `FREE · ${cards.length}/${FREE_LIMIT} cards`}</Text></View>
+                      <Pressable onPress={tryAdd} style={{ backgroundColor: t.accent, borderRadius: 99, paddingHorizontal: 16, paddingVertical: 8 }}><Text style={{ color: '#fff', fontWeight: '700' }}>+ Add Card</Text></Pressable>
+                    </View>
+                    <View style={{ marginTop: 18 }}>{cards.length ? cards.map(c => { const b = brand(c.name); return (
+                      <Pressable key={c.id} onPress={() => setFull(c)} style={{ backgroundColor: b.c, borderRadius: 20, padding: 16, height: 120, marginBottom: 14, overflow: 'hidden' }}>
+                        <Text style={{ position: 'absolute', right: 6, bottom: -40, fontSize: 160, fontWeight: '900', color: b.t, opacity: 0.14 }}>{b.l}</Text>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}><Tile name={c.name} size={38} /><Text style={{ color: b.t }}>{c.type === 'qr' ? 'QR code' : 'Barcode'} ›</Text></View>
+                        <Text style={{ color: b.t, fontSize: 21, fontWeight: '700', marginTop: 12 }}>{c.name}</Text>
+                        <Text style={{ color: b.t, opacity: 0.85 }}>•••• {c.num.slice(-4)}</Text></Pressable>); })
+                      : <Text style={{ color: t.sub, textAlign: 'center', padding: 40 }}>No cards yet. Tap “+ Add Card”.</Text>}</View>
+                    {geoRow && group(geoRow)}
+                  </> : <>
+                    <Text style={{ color: t.text, fontSize: 32, fontWeight: '800' }}>Settings</Text>
+                    {group([row(pro ? 'TapPass Pro' : 'Upgrade to Pro', pro ? 'Active' : '14 days free, then from $2.99/month', () => setPaywall(true)),
+                            row('Restore Purchases', '', () => Alert.alert(pro ? 'Purchases restored' : 'No active subscription found'))])}
+                    {group(geoRow)}
+                    {group(row('Delete All Cards', cards.length + ' saved on this device', () => Alert.alert('Delete all cards?', '', [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive', onPress: () => setCards([]) }])))}
+                    <Text style={{ color: t.sub, fontSize: 12, textAlign: 'center', marginTop: 12 }}>Store locations © OpenStreetMap contributors</Text>
+                    {DEV_TOOLS && <>
+                      <Text style={{ color: t.sub, marginTop: 16 }}>DEVELOPER (hidden in release builds)</Text>
+                      {group([row('Dev Mode: Toggle Pro Status', pro ? 'Pro is ON' : 'Pro is OFF', () => { setPro(!pro); if (pro) setGeo(false); }, <Switch value={pro} onValueChange={v => { setPro(v); if (!v) setGeo(false); }} />),
+                        ...['CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks'].map(n => row(`📍 Simulate: Walking into ${n}`, '', () => notifyNear([n])),
+                        row('📍 Simulate: Mall with 3 stores', 'CVS + Target + Starbucks', () => notifyNear(['CVS', 'Target', 'Starbucks']))])}
+                    </>}
+                  </>}
+                </ScrollView>
+
+                <View style={{ flexDirection: 'row', backgroundColor: t.card, paddingVertical: 10 }}>
+                  {[['w', '💳 Wallet'], ['s', '⚙️ Settings']].map(([k, l]) => <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1, alignItems: 'center' }}>
+                    <Text style={{ color: tab === k ? t.accent : t.sub, fontWeight: '600' }}>{l}</Text></Pressable>)}
+                </View>
+
+                <AddCard visible={adding} t={t} onClose={() => setAdding(false)} onSave={c => { setCards([...cards, { id: String(Date.now()), ...c }]); setAdding(false); }} />
+
+                <Modal visible={paywall} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setPaywall(false)}>
+                  <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ padding: 20 }}>
+                    <Text onPress={() => setPaywall(false)} style={{ color: t.sub, textAlign: 'right', fontSize: 20 }}>✕</Text>
+                    <Text style={{ fontSize: 44, textAlign: 'center' }}>✨</Text>
+                    <Text style={{ color: t.text, fontSize: 30, fontWeight: '800', textAlign: 'center' }}>Try 14 Days Free</Text>
+                    <Text style={{ color: t.sub, textAlign: 'center', marginVertical: 8 }}>Never search for your loyalty card at the checkout again.</Text>
+                    <Text style={{ color: t.text, lineHeight: 26, marginVertical: 12 }}>✓ Unlimited cards{'\n'}✓ GPS Geo-alerts at your favorite stores{'\n'}✓ Cancel anytime</Text>
+                    {[['monthly', 'Monthly - $2.99 / month'], ['yearly', 'Yearly (Save 45%) - $19.99 / year']].map(([k, l]) => (
+                      <Pressable key={k} onPress={() => setPlan(k)} style={{ backgroundColor: t.card, borderRadius: 14, padding: 14, marginVertical: 6, borderWidth: 2, borderColor: plan === k ? t.accent : 'transparent' }}>
+                        <Text style={{ color: t.text, fontSize: 17, fontWeight: '700' }}>{l}</Text><Text style={{ color: t.sub }}>(after 14-day free trial)</Text></Pressable>))}
+                    {/* TODO: replace with RevenueCat: Purchases.purchasePackage(...) and Purchases.restorePurchases() */}
+                    <Pressable onPress={() => { setPro(true); setPaywall(false); }} style={{ backgroundColor: t.accent, borderRadius: 14, padding: 15, marginTop: 10 }}>
+                      <Text style={{ color: '#fff', textAlign: 'center', fontWeight: '700', fontSize: 17 }}>Start 14-Day Free Trial</Text></Pressable>
+                    <Text onPress={() => Alert.alert(pro ? 'Purchases restored' : 'No active subscription found')} style={{ color: t.accent, textAlign: 'center', marginTop: 14 }}>Restore Purchases</Text>
+                    {DEV_TOOLS && <View style={{ marginTop: 20 }}>{group(row('Dev Mode: Toggle Pro Status', pro ? 'Pro is ON' : 'Pro is OFF', () => setPro(!pro), <Switch value={pro} onValueChange={setPro} />))}</View>}
+                  </ScrollView>
+                </Modal>
+
+                <Modal visible={!!choose} transparent animationType="fade" onRequestClose={() => setChoose(null)}>
+                  <Pressable onPress={() => setChoose(null)} style={{ flex: 1, backgroundColor: '#0008', justifyContent: 'flex-end' }}>
+                    <View style={{ backgroundColor: t.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 16 }}>
+                      <Text style={{ color: t.text, fontSize: 20, fontWeight: '800', marginBottom: 8 }}>📍 Which card?</Text>
+                      {(choose || []).map(c => <Pressable key={c.id} onPress={() => { setChoose(null); setFull(c); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: t.card, borderRadius: 14, padding: 12, marginVertical: 4 }}>
+                        <Tile name={c.name} /><Text style={{ color: t.text, fontSize: 17, fontWeight: '600' }}>{c.name}</Text></Pressable>)}
+                    </View>
+                  </Pressable>
+                </Modal>
+
+                <Modal visible={!!full} animationType="fade" onRequestClose={() => setFull(null)}>
+                  {full && <SafeAreaView style={{ flex: 1, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+                    <Text onPress={() => setFull(null)} style={{ position: 'absolute', top: 50, right: 20, fontSize: 17, fontWeight: '600', color: '#000' }}>Close</Text>
+                    <Tile name={full.name} /><Text style={{ color: '#000', fontSize: 22, fontWeight: '700', margin: 14 }}>{full.name}</Text>
+                    <Code card={full} width={320} />
+                    <Text style={{ color: '#555', marginTop: 12 }}>Hold your screen up to the scanner</Text>
+                    <Text onPress={() => Alert.alert('Delete card?', '', [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { setCards(cards.filter(c => c.id !== full.id)); setFull(null); } }])} style={{ color: '#555', textDecorationLine: 'underline', marginTop: 12 }}>Delete card</Text>
+                  </SafeAreaView>}
+                </Modal>
+              </SafeAreaView>
+            );
+          }
+
+          function AddCard({ visible, onClose, onSave, t }) {
+            const [name, setName] = useState('');
+            const [num, setNum] = useState('');
+            const [type, setType] = useState('barcode');
+            const [fmt, setFmt] = useState(null);
+            const [scanning, setScanning] = useState(false);
+            const [perm, askCam] = useCameraPermissions();
+            useEffect(() => { if (visible) { setName(''); setNum(''); setType('barcode'); setFmt(null); } }, [visible]);
+
+            const q = name.trim().toLowerCase();
+            const rank = n => { n = n.toLowerCase(); return !q || n.startsWith(q) ? 0 : n.split(/[\s'-]+/).some(w => w.startsWith(q)) ? 1 : n.includes(q) ? 2 : 9; };
+            const list = STORES.filter(s => rank(s.n) < 9).sort((a, b) => rank(a.n) - rank(b.n));
+            const best = q && list.length && list[0].n.toLowerCase() !== q ? list[0].n : null;
+
+            const apply = r => {
+              if (!r) return Alert.alert('No code found', 'Try a sharper, closer photo.');
+              const qr = r.type === 'qr'; setNum(cleanCode(r.data)); setType(qr ? 'qr' : 'barcode'); setFmt(qr ? null : FMT[r.type] || null);
+            };
+            const openScanner = async () => { if (!perm?.granted && !(await askCam()).granted) return; setScanning(true); };
+            const importImage = async () => {
+              const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] });
+              if (res.canceled) return;
+              apply((await CameraView.scanFromURLAsync(res.assets[0].uri, SCAN_TYPES))[0]);
+            };
+            const ok = name.trim() && num.length >= 4;
+            const inp = { backgroundColor: t.card, color: t.text, borderRadius: 12, padding: 12, fontSize: 17, marginVertical: 6 };
+
+            return (
+              <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+                <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ padding: 18 }} keyboardShouldPersistTaps="handled">
+                  <Text onPress={onClose} style={{ color: t.sub, textAlign: 'right', fontSize: 20 }}>✕</Text>
+                  <Text style={{ color: t.text, fontSize: 24, fontWeight: '800', marginBottom: 12 }}>Add Card</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                    {[['📷', 'Scan with camera', openScanner], ['🖼', 'Import code image', importImage]].map(([i, l, f]) => (
+                      <Pressable key={l} onPress={f} style={{ flex: 1, backgroundColor: t.card, borderRadius: 14, padding: 12, alignItems: 'center' }}>
+                        <Text style={{ fontSize: 24 }}>{i}</Text><Text style={{ color: t.accent, fontWeight: '600', fontSize: 12 }}>{l}</Text></Pressable>))}
+                  </View>
+                  <Text style={{ color: t.sub, fontSize: 13 }}>Store</Text>
+                  <TextInput style={inp} value={name} onChangeText={setName} placeholder="Start typing, e.g. “Sta”" placeholderTextColor={t.sub}
+                    returnKeyType="next" onSubmitEditing={() => best && setName(best)} />
+                  <FlatList horizontal data={list} keyExtractor={s => s.n} showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ marginBottom: 10 }}
+                    ListEmptyComponent={<Text style={{ color: t.sub }}>No match. We’ll save it as “{name}”.</Text>}
+                    renderItem={({ item: s }) => (
+                      <Pressable onPress={() => setName(s.n)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: s.n === best ? t.accent + '33' : t.card, borderRadius: 12, padding: 6, paddingRight: 12, marginRight: 8, borderWidth: 2, borderColor: s.n === best || s.n.toLowerCase() === q ? t.accent : 'transparent' }}>
+                        <Tile name={s.n} size={28} /><Text style={{ color: t.text }}>{s.n}</Text></Pressable>)} />
+                  <Text style={{ color: t.sub, fontSize: 13 }}>Card number</Text>
+                  <TextInput style={inp} value={num} onChangeText={v => { setNum(cleanCode(v)); setFmt(null); }} autoCapitalize="none" autoCorrect={false} placeholder="Card number (or scan above)" placeholderTextColor={t.sub} />
+                  <View style={{ flexDirection: 'row', backgroundColor: t.card, borderRadius: 10, padding: 2, marginVertical: 8 }}>
+                    {[['barcode', 'Barcode'], ['qr', 'QR Code']].map(([k, l]) => <Pressable key={k} onPress={() => setType(k)} style={{ flex: 1, padding: 8, borderRadius: 8, backgroundColor: type === k ? t.bg : 'transparent' }}>
+                      <Text style={{ textAlign: 'center', color: t.text, fontWeight: type === k ? '700' : '400' }}>{l}</Text></Pressable>)}
+                  </View>
+                  {num.length > 0 && <View style={{ marginBottom: 12 }}><Code card={{ num, type, fmt }} width={260} /></View>}
+                  <Pressable disabled={!ok} onPress={() => onSave({ name: name.trim(), num, type, fmt })} style={{ backgroundColor: t.accent, borderRadius: 14, padding: 15, opacity: ok ? 1 : 0.4 }}>
+                    <Text style={{ color: '#fff', textAlign: 'center', fontWeight: '700', fontSize: 17 }}>Save Card</Text></Pressable>
+                </ScrollView>
+
+                <Modal visible={scanning} animationType="slide" onRequestClose={() => setScanning(false)}>
+                  <View style={{ flex: 1, backgroundColor: '#000' }}>
+                    <CameraView style={{ flex: 1 }} barcodeScannerSettings={{ barcodeTypes: SCAN_TYPES }}
+                      onBarcodeScanned={r => { setScanning(false); apply(r); }} />
+                    <Text onPress={() => setScanning(false)} style={{ position: 'absolute', top: 60, right: 20, color: '#fff', fontSize: 17, fontWeight: '600' }}>Cancel</Text>
+                    <Text style={{ position: 'absolute', bottom: 60, width: '100%', textAlign: 'center', color: '#fff' }}>Point the camera at the card’s code</Text>
+                  </View>
+                </Modal>
+              </Modal>
+            );
+          }
+          TAPPASS_EOF
+          cat > geo.js <<'TAPPASS_EOF'
+          import * as TaskManager from 'expo-task-manager';
+          import * as Location from 'expo-location';
+          import * as Notifications from 'expo-notifications';
+          import AsyncStorage from '@react-native-async-storage/async-storage';
+
+          export const TASK = 'TAPPASS_GEOFENCE';
+          // Store locations come from OpenStreetMap via the Overpass API.
+          // The public server is for light use only: point this at your own backend/mirror before launch.
+          const OVERPASS = process.env.EXPO_PUBLIC_OVERPASS_URL || 'https://overpass-api.de/api/interpreter';
+          const SEARCH_RADIUS = 25000;      // m, area searched around the user
+          const CACHE_RANGE = 8000;         // m, reuse cached stores while the user stays within this distance
+          const CACHE_TTL = 7 * 864e5;      // 7 days
+          const RADIUS = 150;               // m, store geofence
+          const MAX_REGIONS = 18;           // iOS allows 20 regions per app; 1 is used by the refresh zone
+          const REFRESH_ID = 'refresh::zone';
+          const REFRESH_RADIUS = 4000;      // leaving this zone rebuilds the geofences around the new position
+          const COOLDOWN = 4 * 3600e3;      // one alert per store per 4 h
+
+          Notifications.setNotificationHandler({
+            handleNotification: async () => ({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false }),
+          });
+
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const load = async k => JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+
+          // One notification for one or several stores (e.g. a mall). Tapping opens the card or a picker.
+          export async function notifyNear(stores) {
+            const cards = (await load('cards')) || [];
+            const matched = [...new Set(stores)].map(s => cards.find(c => c.name.toLowerCase() === s.toLowerCase())).filter(Boolean);
+            if (!matched.length) return;
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title: `📍 You are near ${matched.map(c => c.name).join(', ')}!`,
+                body: matched.length > 1 ? 'Tap to choose your card.' : 'Tap to open your card.',
+                data: { cardIds: matched.map(c => c.id) },
+              },
+              trigger: null,
+            });
+          }
+
+          // Collect enter events that arrive within a few seconds and send them as one notification.
+          async function enqueue(store) {
+            const q = ((await load('queue')) || []).filter(x => Date.now() - x.t < 15000);
+            q.push({ s: store, t: Date.now() });
+            await AsyncStorage.setItem('queue', JSON.stringify(q));
+            await sleep(3000);
+            const now = (await load('queue')) || [];
+            if (!now.length) return;                       // another handler already sent it
+            await AsyncStorage.setItem('queue', '[]');
+            await notifyNear(now.map(x => x.s));
+          }
+
+          // Runs in the background, also when the app is closed.
+          TaskManager.defineTask(TASK, async ({ data, error }) => {
+            if (error || !data) return;
+            const { eventType, region } = data;
+            if (region.identifier === REFRESH_ID) {
+              if (eventType === Location.GeofencingEventType.Exit) {
+                const cards = (await load('cards')) || [];
+                if (cards.length) await refreshGeofences(cards).catch(() => {});
+              }
+              return;
+            }
+            if (eventType !== Location.GeofencingEventType.Enter) return;
+            const store = region.identifier.split('::')[0];
+            const key = 'last:' + store;
+            if (Date.now() - Number((await AsyncStorage.getItem(key)) || 0) < COOLDOWN) return;
+            await AsyncStorage.setItem(key, String(Date.now()));
+            await enqueue(store);
+          });
+
+          export async function askPermissions() {
+            const fg = await Location.requestForegroundPermissionsAsync();
+            if (fg.status !== 'granted') return false;
+            const bg = await Location.requestBackgroundPermissionsAsync();
+            if (bg.status !== 'granted') return false;
+            return (await Notifications.requestPermissionsAsync()).status === 'granted';
+          }
+
+          const dist = (a, b, c, d) => {
+            const r = x => x * Math.PI / 180, R = 6371e3;
+            const h = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2;
+            return 2 * R * Math.asin(Math.sqrt(h));
+          };
+
+          // ---- OpenStreetMap (Overpass) ----
+          const esc = n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/['’]/g, "['’]?").replace(/[Żż]/g, '[ŻżZz]');   // Żabka / Zabka
+          const qEsc = n => esc(n).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+          async function queryStores(names, lat, lng) {
+            const around = `(around:${SEARCH_RADIUS},${lat},${lng})`;
+            const parts = names.flatMap(n => ['name', 'brand'].map(k => `nwr["${k}"~"${qEsc(n)}",i][~"^(shop|amenity)$"~"."]${around};`));
+            const q = `[out:json][timeout:25];(${parts.join('')});out center tags;`;
+            const res = await fetch(OVERPASS, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
+            if (!res.ok) throw new Error('Overpass ' + res.status);
+            const { elements = [] } = await res.json();
+            const regs = names.map(n => [n, new RegExp(esc(n), 'i')]);
+            const seen = new Set(), out = [];
+            for (const el of elements) {
+              const la = el.lat ?? el.center?.lat, lo = el.lon ?? el.center?.lon;
+              if (la == null) continue;
+              const text = `${el.tags?.name || ''} ${el.tags?.brand || ''}`;
+              const hit = regs.find(([, r]) => r.test(text));
+              if (!hit) continue;
+              const key = `${hit[0]}:${la.toFixed(3)}:${lo.toFixed(3)}`;   // node + building of the same store -> one entry
+              if (seen.has(key)) continue;
+              seen.add(key); out.push({ name: hit[0], lat: la, lng: lo });
+            }
+            return out;
+          }
+
+          async function getStores(names, lat, lng) {
+            const cache = await load('osm:cache');
+            const usable = cache && names.every(n => cache.names.includes(n));
+            if (usable && Date.now() - cache.t < CACHE_TTL && dist(lat, lng, cache.lat, cache.lng) < CACHE_RANGE) return cache.stores;
+            try {
+              const stores = await queryStores(names, lat, lng);
+              await AsyncStorage.setItem('osm:cache', JSON.stringify({ t: Date.now(), lat, lng, names, stores }));
+              return stores;
+            } catch (e) {
+              if (usable) return cache.stores;   // offline / server busy: fall back to the cache
+              throw e;
+            }
+          }
+
+          // Registers the nearest stores of the user's cards plus one big "refresh zone".
+          export async function refreshGeofences(cards) {
+            const { coords } = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            const { latitude: lat, longitude: lng } = coords;
+            const names = [...new Set(cards.map(c => c.name))];
+            const stores = (await getStores(names, lat, lng)).map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d).slice(0, MAX_REGIONS);
+            const regions = stores.map(p => ({ identifier: `${p.name}::${p.lat.toFixed(4)},${p.lng.toFixed(4)}`, latitude: p.lat, longitude: p.lng, radius: RADIUS, notifyOnEnter: true, notifyOnExit: false }));
+            regions.push({ identifier: REFRESH_ID, latitude: lat, longitude: lng, radius: REFRESH_RADIUS, notifyOnEnter: false, notifyOnExit: true });
+            await Location.startGeofencingAsync(TASK, regions);
+            return stores.length;
+          }
+
+          export async function stopGeo() {
+            if (await Location.hasStartedGeofencingAsync(TASK)) await Location.stopGeofencingAsync(TASK);
+          }
+          TAPPASS_EOF
+          cat > stores.js <<'TAPPASS_EOF'
+          // [name, brand color, initial, optional letter color] - original tiles, not official logos
+          export const STORES = [
+          ["Target","#CC0000","T"],["CVS","#CC0000","C"],["Walgreens","#E31837","w"],["Rite Aid","#0072CE","R"],["Kroger","#0E4C96","K"],
+          ["Walmart","#0071CE","W","#FFC220"],["Whole Foods","#00674B","W"],["Sephora","#111111","S"],["Costco","#E31837","C"],
+          ["Starbucks","#00704A","S"],["Dunkin'","#FF671F","D"],["McDonald's","#DA291C","M","#FFC72C"],["Subway","#009743","S","#FFC600"],
+          ["Chipotle","#A81612","C"],["Panera Bread","#4C7A34","P"],["Chick-fil-A","#E51636","C"],["Burger King","#D62300","B"],
+          ["Wendy's","#E2203D","W"],["Taco Bell","#702082","T"],["Panda Express","#D1282E","P"],["Domino's","#006491","D"],["Pizza Hut","#EE3124","P"],
+          ["Safeway","#E31837","S"],["Albertsons","#0072BC","A"],["Publix","#3D8B2F","P"],["Trader Joe's","#D2232A","T"],["Aldi","#00005F","A","#FF8200"],
+          ["H-E-B","#E31837","H"],["Wegmans","#C8102E","W"],["Meijer","#E31837","M"],["Sprouts","#6BA539","S"],
+          ["Dollar General","#FFE600","D","#000000"],["Dollar Tree","#3D9B35","D"],["Sam's Club","#0067A0","S"],["BJ's","#D50032","B"],
+          ["Best Buy","#0046BE","B","#FFE000"],["Home Depot","#F96302","H"],["Lowe's","#004990","L"],["Ulta Beauty","#F26F21","U"],
+          ["Barnes & Noble","#00563F","B"],["Petco","#0A78C2","P"],["PetSmart","#E31837","P"],["Macy's","#E21A2C","M"],["Nordstrom","#1A1A1A","N"],
+          ["Kohl's","#111111","K"],["Staples","#CC0000","S"],["Office Depot","#CC0000","O"],["Bath & Body Works","#002F6C","B"],
+          ["Victoria's Secret","#E8368F","V"],["Gap","#00205B","G"],["Old Navy","#002D72","O"],["Dick's","#00573F","D"],["GameStop","#E50019","G"],
+          ["7-Eleven","#008061","7","#FF6A13"],
+          // TEST ONLY (Poland) - remove after geofence tests
+          ["Żabka","#00A651","Ż"],["Biedronka","#E30613","B"],["Wawa","#C8102E","W"],["Sheetz","#E31837","S"]
+          ].map(([n,c,l,t])=>({n,c,l,t:t||'#fff'}));
+          TAPPASS_EOF
+          cat > app.json <<'TAPPASS_EOF'
+          {
+            "expo": {
+              "name": "TapPass",
+              "slug": "tappass",
+              "scheme": "tappass",
+              "version": "1.0.0",
+              "orientation": "portrait",
+              "userInterfaceStyle": "automatic",
+              "ios": {
+                "bundleIdentifier": "com.tappass.app",
+                "supportsTablet": false,
+                "infoPlist": {
+                  "UIBackgroundModes": [
+                    "location"
+                  ],
+                  "NSLocationWhenInUseUsageDescription": "TapPass finds nearby stores where you have loyalty cards.",
+                  "NSLocationAlwaysAndWhenInUseUsageDescription": "TapPass alerts you with the right loyalty card when you arrive at a store, even if the app is closed.",
+                  "NSCameraUsageDescription": "TapPass scans the barcode or QR code on your loyalty card."
+                }
+              },
+              "android": {
+                "package": "com.tappass.app",
+                "permissions": [
+                  "ACCESS_FINE_LOCATION",
+                  "ACCESS_COARSE_LOCATION",
+                  "ACCESS_BACKGROUND_LOCATION",
+                  "POST_NOTIFICATIONS",
+                  "CAMERA"
+                ],
+                "adaptiveIcon": {
+                  "foregroundImage": "./assets/adaptive-icon.png",
+                  "backgroundColor": "#3F6CF3"
+                }
+              },
+              "plugins": [
+                [
+                  "expo-location",
+                  {
+                    "isIosBackgroundLocationEnabled": true,
+                    "isAndroidBackgroundLocationEnabled": true
+                  }
+                ],
+                "expo-notifications",
+                [
+                  "expo-camera",
+                  {
+                    "cameraPermission": "TapPass scans the barcode or QR code on your loyalty card."
+                  }
+                ],
+                [
+                  "expo-image-picker",
+                  {
+                    "photosPermission": "TapPass reads a code from an image you choose."
+                  }
+                ]
+              ],
+              "icon": "./assets/icon.png",
+              "splash": {
+                "image": "./assets/adaptive-icon.png",
+                "resizeMode": "contain",
+                "backgroundColor": "#3F6CF3"
+              }
+            }
+          }
+          TAPPASS_EOF
+
+      - name: Generate icons
+        run: |
+          pip install --quiet pillow numpy
+          python3 - <<'TAPPASS_EOF'
+          from PIL import Image, ImageDraw
+          import numpy as np, math, os
+          S=2; N=1024*S
+          CX,CY=610,420; RADII=[(45,1.0),(95,.7),(145,.45)]; SW=30; A=48
+          bars=[]; x=212
+          for w in [14,8,22,10,16,8,24,12,8,20,10,16,8,22,12,10,18,8,14,10]:
+              if x+w>600: break
+              bars.append((x,w)); x+=w+10
+          pt=lambda r,a:(CX+r*math.cos(math.radians(a)),CY+r*math.sin(math.radians(a)))
+          def render(k,bg):
+              P=lambda x,y:((512+(x-512)*k)*S,(512+(y-512)*k)*S)
+              L=lambda v:v*k*S
+              if bg:
+                  t=np.linspace(0,1,N,dtype=np.float32); d=(t[None,:]+t[:,None])/2
+                  c0=np.array([0x2f,0x95,0xff],np.float32); c1=np.array([0x5a,0x3d,0xf0],np.float32)
+                  img=Image.fromarray((c0*(1-d[...,None])+c1*d[...,None]).astype(np.uint8),'RGB').convert('RGBA')
+              else: img=Image.new('RGBA',(N,N),(0,0,0,0))
+              dr=ImageDraw.Draw(img)
+              x0,y0=P(162,292); x1,y1=P(862,732); dr.rounded_rectangle([x0,y0,x1,y1],radius=L(64),fill=(255,255,255,255))
+              a,b=P(212,342); c,d_=P(362,370); dr.rounded_rectangle([a,b,c,d_],radius=L(14),fill=(0x2f,0x7b,0xff,255))
+              for r,o in RADII:
+                  lay=Image.new('RGBA',(N,N),(0,0,0,0)); ld=ImageDraw.Draw(lay); rad=L(SW)/2
+                  for i in range(0,2*A*4+1):
+                      px,py=P(*pt(r,-A+i/4)); ld.ellipse([px-rad,py-rad,px+rad,py+rad],fill=(0x2f,0x7b,0xff,int(255*o)))
+                  img=Image.alpha_composite(img,lay)
+              dr=ImageDraw.Draw(img)
+              for x,w in bars:
+                  a,b=P(x,566); c,d_=P(x+w,658); dr.rounded_rectangle([a,b,c,d_],radius=L(2),fill=(0x22,0x30,0x7a,255))
+              return img.resize((1024,1024),Image.LANCZOS)
+          os.makedirs('assets',exist_ok=True)
+          render(1,True).convert('RGB').save('assets/icon.png')
+          render(.8,False).save('assets/adaptive-icon.png')
+          TAPPASS_EOF
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context
+          npm install react-native-qrcode-svg jsbarcode
+
+      - name: Create .env (EXPO_PUBLIC_* trafia do aplikacji = publiczne)
+        run: |
+          echo "EXPO_PUBLIC_DEV_TOOLS=${{ vars.EXPO_PUBLIC_DEV_TOOLS || '1' }}" >> .env
+          echo "EXPO_PUBLIC_OVERPASS_URL=${{ secrets.EXPO_PUBLIC_OVERPASS_URL }}" >> .env
+
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --clean
+
+      - name: Decode keystore (only if secret exists)
+        if: env.HAS_KEYSTORE == 'true'
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
+
+      - name: Build APK
+        working-directory: android
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            ./gradlew assembleRelease --no-daemon \
+              -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/release.keystore" \
+              -Pandroid.injected.signing.store.password="$KS_PASS" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASS"
+          else
+            ./gradlew assembleRelease --no-daemon
+          fi
+
+      - name: Collect APK
+        run: cp android/app/build/outputs/apk/release/*.apk tappass.apk
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: TapPass build ${{ github.run_number }}
+          prerelease: true
+          files: tappass.apk
