@@ -4,6 +4,9 @@ name: Build TapPass APK
 
 on:
   workflow_dispatch:          # przycisk "Run workflow"
+  push:                       # zapis tego pliku (commit) od razu buduje nowy APK
+    branches: [main]
+    paths: ['.github/workflows/**']
 
 permissions:
   contents: write             # żeby wrzucić APK do zakładki Releases
@@ -40,18 +43,19 @@ jobs:
           mkdir -p assets
           cat > App.js <<'TAPPASS_EOF'
           import React, { useEffect, useState } from 'react';
-          import { View, Text, Pressable, Modal, TextInput, FlatList, ScrollView, Switch, Alert, useColorScheme } from 'react-native';
+          import { View, Text, Pressable, Modal, TextInput, FlatList, ScrollView, Switch, Alert, Image, useColorScheme } from 'react-native';
           import { SafeAreaView } from 'react-native-safe-area-context';
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import * as Notifications from 'expo-notifications';
           import * as Brightness from 'expo-brightness';
           import * as ImagePicker from 'expo-image-picker';
           import { CameraView, useCameraPermissions } from 'expo-camera';
-          import Svg, { Rect } from 'react-native-svg';
+          import { LinearGradient } from 'expo-linear-gradient';
+          import Svg, { Rect, Path, Circle } from 'react-native-svg';
           import QRCode from 'react-native-qrcode-svg';
           import JsBarcode from 'jsbarcode';
           import { STORES } from './stores';
-          import { askPermissions, refreshGeofences, stopGeo, notifyNear } from './geo';
+          import { askPermissions, refreshGeofences, stopGeo, notifyNear, getStatus } from './geo';
 
           // dev tools (Pro switch + geofence simulator) show in dev builds, or in any build with EXPO_PUBLIC_DEV_TOOLS=1
           const DEV_TOOLS = __DEV__ || process.env.EXPO_PUBLIC_DEV_TOOLS === '1';
@@ -59,17 +63,26 @@ jobs:
           const FMT = { ean13: 'EAN13', ean8: 'EAN8', upc_a: 'UPC', upc_e: 'UPCE', code39: 'CODE39', code128: 'CODE128', itf14: 'ITF', codabar: 'codabar' };
           const SCAN_TYPES = ['qr', ...Object.keys(FMT)];
 
+          const darken = (c, f = 0.4) => {
+            if (c.startsWith('#')) { const n = parseInt(c.slice(1), 16), m = v => Math.round(v * (1 - f)); return `rgb(${m(n >> 16)},${m((n >> 8) & 255)},${m(n & 255)})`; }
+            return c.replace(/\d+%\)$/, '26%)');
+          };
+          const palette = dark => dark
+            ? { bg: '#000', card: '#1c1c1e', text: '#f5f5f7', sub: '#98989f', line: '#2c2c2e', accent: '#0a84ff', green: '#34c759' }
+            : { bg: '#f2f2f7', card: '#fff', text: '#111', sub: '#6b6b73', line: '#e1e1e8', accent: '#007aff', green: '#34c759' };
+          const SIM = ['CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks', 'Żabka', 'Biedronka'];
+
           const brand = name => {
             const s = STORES.find(x => x.n.toLowerCase() === name.trim().toLowerCase());
-            if (s) return s;
+            if (s) return { ...s, d: darken(s.c) };
             let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
-            return { n: name, c: `hsl(${h},55%,42%)`, l: (name.trim()[0] || '?').toUpperCase(), t: '#fff' };
+            return { n: name, c: `hsl(${h},55%,42%)`, l: (name.trim()[0] || '?').toUpperCase(), t: '#fff', d: darken(`hsl(${h},55%,42%)`) };
           };
           const cleanCode = v => { v = v.replace(/[^\x20-\x7E]/g, '').trim(); return (/^[\d\s-]+$/.test(v) ? v.replace(/[\s-]/g, '') : v).slice(0, 120); };
 
-          function Tile({ name, size = 46 }) {
+          function Tile({ name, size = 46, translucent }) {
             const b = brand(name);
-            return <View style={{ width: size, height: size, borderRadius: size / 4, backgroundColor: b.c, alignItems: 'center', justifyContent: 'center' }}>
+            return <View style={{ width: size, height: size, borderRadius: size / 4, backgroundColor: translucent ? 'rgba(255,255,255,.22)' : b.c, alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ color: b.t, fontWeight: '800', fontSize: size * 0.5 }}>{b.l}</Text></View>;
           }
 
@@ -86,13 +99,45 @@ jobs:
             {card.type === 'qr' ? <QRCode value={card.num} size={Math.min(width, 300)} /> : <Barcode value={card.num} fmt={card.fmt} width={width} />}
             <Text style={{ color: '#000', marginTop: 8, fontSize: 16 }}>{card.type === 'qr' ? '' : card.num}</Text></View>;
 
+
+          function Row({ t, ico, bg, title, sub, onPress, right }) {
+            return (
+              <Pressable onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 12, paddingHorizontal: 14, borderBottomWidth: 0.5, borderColor: t.line }}>
+                {ico ? <View style={{ width: 30, height: 30, borderRadius: 8, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 16 }}>{ico}</Text></View> : null}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: t.text, fontSize: 17, fontWeight: '600' }}>{title}</Text>
+                  {sub ? <Text style={{ color: t.sub, fontSize: 13 }}>{sub}</Text> : null}
+                </View>
+                {right === undefined ? <Text style={{ color: t.sub, fontSize: 20 }}>›</Text> : right}
+              </Pressable>
+            );
+          }
+          const Group = ({ t, children }) => <View style={{ backgroundColor: t.card, borderRadius: 14, marginVertical: 8, overflow: 'hidden' }}>{children}</View>;
+          const Sec = ({ t, children }) => <Text style={{ color: t.sub, fontSize: 13, letterSpacing: 0.4, textTransform: 'uppercase', marginTop: 20, marginHorizontal: 14, marginBottom: -2 }}>{children}</Text>;
+          const Seg = ({ t, value, options, onChange }) => (
+            <View style={{ flexDirection: 'row', backgroundColor: t.line, borderRadius: 10, padding: 2 }}>
+              {options.map(([k, l]) => (
+                <Pressable key={k} onPress={() => onChange(k)} style={{ flex: 1, padding: 8, borderRadius: 8, backgroundColor: value === k ? t.card : 'transparent' }}>
+                  <Text style={{ textAlign: 'center', color: t.text, fontWeight: value === k ? '700' : '400' }}>{l}</Text>
+                </Pressable>))}
+            </View>
+          );
+          const TabIcon = ({ kind, color }) => (
+            <Svg width={25} height={25} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              {kind === 'w'
+                ? <><Rect x={3} y={6} width={18} height={13} rx={3} /><Path d="M3 10h18M16 14.5h2" /></>
+                : <><Path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><Circle cx={16} cy={7} r={2} /><Circle cx={8} cy={17} r={2} /></>}
+            </Svg>
+          );
+
           export default function App() {
-            const dark = useColorScheme() === 'dark';
-            const t = { bg: dark ? '#000' : '#f2f2f7', card: dark ? '#1c1c1e' : '#fff', text: dark ? '#f5f5f7' : '#111', sub: '#8e8e93', accent: dark ? '#0a84ff' : '#007aff' };
+            const sys = useColorScheme();
             const [ready, setReady] = useState(false);
             const [cards, setCards] = useState([]);
             const [pro, setPro] = useState(false);
             const [geo, setGeo] = useState(false);
+            const [theme, setTheme] = useState('system');
+            const [dev, setDev] = useState(true);
             const [tab, setTab] = useState('w');
             const [adding, setAdding] = useState(false);
             const [paywall, setPaywall] = useState(false);
@@ -100,18 +145,24 @@ jobs:
             const [pending, setPending] = useState(null);
             const [choose, setChoose] = useState(null);
             const [plan, setPlan] = useState('yearly');
+            const [toast, setToast] = useState('');
+            const [gstat, setGstat] = useState(null);
+            const t = palette(theme === 'system' ? sys === 'dark' : theme === 'dark');
+            const say = m => { setToast(m); setTimeout(() => setToast(''), 2600); };
 
             useEffect(() => { (async () => {
-              const [c, p, g] = await Promise.all(['cards', 'pro', 'geo'].map(k => AsyncStorage.getItem(k)));
-              setCards(c ? JSON.parse(c) : []); setPro(p === '1'); setGeo(g === '1'); setReady(true);
+              const v = await Promise.all(['cards', 'pro', 'geo', 'theme', 'dev'].map(k => AsyncStorage.getItem(k)));
+              setCards(v[0] ? JSON.parse(v[0]) : []); setPro(v[1] === '1'); setGeo(v[2] === '1');
+              setTheme(v[3] || 'system'); setDev(v[4] === null ? true : v[4] === '1'); setReady(true);
             })(); }, []);
             useEffect(() => { if (!ready) return;
-              AsyncStorage.multiSet([['cards', JSON.stringify(cards)], ['pro', pro ? '1' : '0'], ['geo', geo ? '1' : '0']]);
-            }, [cards, pro, geo, ready]);
+              AsyncStorage.multiSet([['cards', JSON.stringify(cards)], ['pro', pro ? '1' : '0'], ['geo', geo ? '1' : '0'], ['theme', theme], ['dev', dev ? '1' : '0']]);
+            }, [cards, pro, geo, theme, dev, ready]);
             // keep geofences in sync (needs Pro + toggle + at least one card)
             useEffect(() => { if (!ready) return; (async () => {
               try { if (geo && pro && cards.length) await refreshGeofences(cards); else await stopGeo(); }
               catch (e) { console.warn('geofence', e.message); }
+              setGstat(await getStatus());
             })(); }, [geo, pro, cards, ready]);
             // notification tap -> open card (also on cold start)
             useEffect(() => {
@@ -137,47 +188,117 @@ jobs:
               if (!geo && !(await askPermissions())) return Alert.alert('Permission needed', 'Allow location "Always" and notifications in system settings.');
               setGeo(!geo);
             };
-            const row = (title, sub, onPress, right) => <Pressable onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 0.5, borderColor: t.bg }}>
-              <View style={{ flex: 1 }}><Text style={{ color: t.text, fontSize: 17, fontWeight: '600' }}>{title}</Text>{sub ? <Text style={{ color: t.sub, fontSize: 13 }}>{sub}</Text> : null}</View>{right}</Pressable>;
-            const group = kids => <View style={{ backgroundColor: t.card, borderRadius: 14, marginVertical: 8, overflow: 'hidden' }}>{kids}</View>;
-            const geoRow = row('GPS Geo-alerts' + (pro ? '' : ' 🔒'), 'Show your card automatically near a store', toggleGeo, <Switch value={geo && pro} onValueChange={toggleGeo} />);
+            const toggleDevPro = v => { setPro(v); if (!v) setGeo(false); };
+            const restore = () => say(pro ? 'Purchases restored. TapPass Pro is active.' : 'No active subscription found.');
+            const sw = (v, f) => <Switch value={v} onValueChange={f} trackColor={{ true: t.green }} />;
+            const geoRow = (
+              <Group t={t}><Row t={t} ico="📍" bg="#007aff" title={'GPS Geo-alerts' + (pro ? '' : ' 🔒')} sub="Show your card automatically near a store" onPress={toggleGeo} right={sw(geo && pro, toggleGeo)} /></Group>
+            );
+            const refreshNow = async () => {
+              say('Refreshing nearby stores…');
+              try { const n = await refreshGeofences(cards); say(`Watching ${n} nearby stores`); } catch (e) { say('Error: ' + e.message); }
+              setGstat(await getStatus());
+            };
+            const gtext = !(geo && pro) ? 'Off' : !cards.length ? 'Add a card first' : !gstat ? 'Checking…'
+              : gstat.err ? 'Error: ' + gstat.err
+              : gstat.nearest ? `Watching ${gstat.count} stores · nearest: ${gstat.nearest.name}, ${gstat.nearest.d} m` : 'No stores of your cards found nearby';
+            const title = txt => <Text style={{ color: t.text, fontSize: 32, fontWeight: '800', letterSpacing: -0.5 }}>{txt}</Text>;
 
             return (
               <SafeAreaView style={{ flex: 1, backgroundColor: t.bg }}>
-                <ScrollView contentContainerStyle={{ padding: 16 }}>
+                <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }}>
                   {tab === 'w' ? <>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-                      <View><Text style={{ color: t.text, fontSize: 32, fontWeight: '800' }}>Wallet</Text>
-                        <Text onPress={() => setPaywall(true)} style={{ color: t.sub, fontWeight: '700' }}>{pro ? 'PRO' : `FREE · ${cards.length}/${FREE_LIMIT} cards`}</Text></View>
-                      <Pressable onPress={tryAdd} style={{ backgroundColor: t.accent, borderRadius: 99, paddingHorizontal: 16, paddingVertical: 8 }}><Text style={{ color: '#fff', fontWeight: '700' }}>+ Add Card</Text></Pressable>
+                      <View style={{ gap: 6 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Image source={require('./assets/icon.png')} style={{ width: 34, height: 34, borderRadius: 8 }} />
+                          {title('TapPass')}
+                        </View>
+                        {pro
+                          ? <LinearGradient colors={['#ff9f0a', '#ff375f']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ alignSelf: 'flex-start', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 3 }}><Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>PRO</Text></LinearGradient>
+                          : <Pressable onPress={() => setPaywall(true)} style={{ alignSelf: 'flex-start', backgroundColor: t.line, borderRadius: 99, paddingHorizontal: 8, paddingVertical: 3 }}><Text style={{ color: t.sub, fontSize: 12, fontWeight: '700' }}>FREE · {cards.length}/{FREE_LIMIT} cards</Text></Pressable>}
+                      </View>
+                      <Pressable onPress={tryAdd} style={{ backgroundColor: t.accent, borderRadius: 99, paddingHorizontal: 16, paddingVertical: 8 }}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>+ Add Card</Text></Pressable>
                     </View>
-                    <View style={{ marginTop: 18 }}>{cards.length ? cards.map(c => { const b = brand(c.name); return (
-                      <Pressable key={c.id} onPress={() => setFull(c)} style={{ backgroundColor: b.c, borderRadius: 20, padding: 16, height: 120, marginBottom: 14, overflow: 'hidden' }}>
-                        <Text style={{ position: 'absolute', right: 6, bottom: -40, fontSize: 160, fontWeight: '900', color: b.t, opacity: 0.14 }}>{b.l}</Text>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}><Tile name={c.name} size={38} /><Text style={{ color: b.t }}>{c.type === 'qr' ? 'QR code' : 'Barcode'} ›</Text></View>
-                        <Text style={{ color: b.t, fontSize: 21, fontWeight: '700', marginTop: 12 }}>{c.name}</Text>
-                        <Text style={{ color: b.t, opacity: 0.85 }}>•••• {c.num.slice(-4)}</Text></Pressable>); })
-                      : <Text style={{ color: t.sub, textAlign: 'center', padding: 40 }}>No cards yet. Tap “+ Add Card”.</Text>}</View>
-                    {geoRow && group(geoRow)}
+                    <View style={{ marginTop: 18 }}>
+                      {cards.length ? cards.map(c => { const b = brand(c.name); return (
+                        <Pressable key={c.id} onPress={() => setFull(c)} style={{ marginBottom: 14, borderRadius: 20, overflow: 'hidden', elevation: 4, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 10, shadowOffset: { width: 0, height: 6 } }}>
+                          <LinearGradient colors={[b.c, b.d]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ height: 122, padding: 16 }}>
+                            <Text style={{ position: 'absolute', right: -4, bottom: -40, fontSize: 160, fontWeight: '900', color: b.t, opacity: 0.14 }}>{b.l}</Text>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Tile name={c.name} size={38} translucent /><Text style={{ color: b.t, opacity: 0.9, fontSize: 13 }}>{c.type === 'qr' ? 'QR code' : 'Barcode'} ›</Text>
+                            </View>
+                            <Text style={{ color: b.t, fontSize: 21, fontWeight: '700', marginTop: 12 }}>{c.name}</Text>
+                            <Text style={{ color: b.t, opacity: 0.85, fontSize: 13 }}>•••• {c.num.slice(-4)}</Text>
+                          </LinearGradient>
+                        </Pressable>); })
+                        : <View style={{ alignItems: 'center', padding: 40 }}><Text style={{ fontSize: 48 }}>💳</Text><Text style={{ color: t.text, fontWeight: '700', marginTop: 6 }}>No cards yet</Text><Text style={{ color: t.sub, marginTop: 4 }}>Add your first loyalty card to get started.</Text></View>}
+                    </View>
+                    {!pro && (
+                      <Pressable onPress={() => setPaywall(true)} style={{ marginBottom: 12 }}>
+                        <LinearGradient colors={['#ff9f0a', '#ff375f']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ borderRadius: 16, padding: 14 }}>
+                          <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700' }}>✨ Go Pro</Text>
+                          <Text style={{ color: '#fff', fontSize: 13 }}>Unlimited cards and GPS Geo-alerts. 14 days free.</Text>
+                        </LinearGradient>
+                      </Pressable>)}
+                    {geoRow}
                   </> : <>
-                    <Text style={{ color: t.text, fontSize: 32, fontWeight: '800' }}>Settings</Text>
-                    {group([row(pro ? 'TapPass Pro' : 'Upgrade to Pro', pro ? 'Active' : '14 days free, then from $2.99/month', () => setPaywall(true)),
-                            row('Restore Purchases', '', () => Alert.alert(pro ? 'Purchases restored' : 'No active subscription found'))])}
-                    {group(geoRow)}
-                    {group(row('Delete All Cards', cards.length + ' saved on this device', () => Alert.alert('Delete all cards?', '', [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive', onPress: () => setCards([]) }])))}
-                    <Text style={{ color: t.sub, fontSize: 12, textAlign: 'center', marginTop: 12 }}>Store locations © OpenStreetMap contributors</Text>
+                    {title('Settings')}
+                    <Sec t={t}>Subscription</Sec>
+                    <Group t={t}>
+                      <Row t={t} ico="⭐" bg="#ff9f0a" title={pro ? 'TapPass Pro' : 'Upgrade to Pro'} sub={pro ? 'Active · unlimited cards' : '14 days free, then from $2.99/month'} onPress={() => setPaywall(true)} />
+                      <Row t={t} ico="↻" bg="#007aff" title="Restore Purchases" onPress={restore} />
+                      {pro && <Row t={t} ico="⚙" bg="#8e8e93" title="Manage Subscription" sub="App Store / Google Play" onPress={() => say('Opens your store subscription settings')} />}
+                    </Group>
+                    <Sec t={t}>Preferences</Sec>
+                    {geoRow}
+                    {geo && pro && <Group t={t}><Row t={t} ico="🛰" bg="#34c759" title="Geo-alerts status" sub={gtext} onPress={refreshNow} right={<Text style={{ color: t.accent, fontSize: 13 }}>Refresh</Text>} /></Group>}
+                    <Group t={t}>
+                      <View style={{ padding: 14, gap: 8 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                          <View style={{ width: 30, height: 30, borderRadius: 8, backgroundColor: '#5856d6', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 16 }}>🌓</Text></View>
+                          <Text style={{ color: t.text, fontSize: 17, fontWeight: '600' }}>Appearance</Text>
+                        </View>
+                        <Seg t={t} value={theme} onChange={setTheme} options={[['system', 'System'], ['light', 'Light'], ['dark', 'Dark']]} />
+                      </View>
+                    </Group>
+                    <Sec t={t}>Support</Sec>
+                    <Group t={t}>
+                      <Row t={t} ico="✉️" bg="#34c759" title="Contact Support" sub="support@tappass.app" onPress={() => say('Opens your mail app')} />
+                      <Row t={t} ico="★" bg="#ff9f0a" title="Rate TapPass" onPress={() => say('Opens the store review page')} />
+                      <Row t={t} ico="🔒" bg="#8e8e93" title="Privacy Policy" onPress={() => say('Opens privacy policy')} />
+                      <Row t={t} ico="📄" bg="#8e8e93" title="Terms of Use" onPress={() => say('Opens terms of use')} />
+                    </Group>
+                    <Sec t={t}>Data</Sec>
+                    <Group t={t}>
+                      <Row t={t} ico="🗑" bg="#ff3b30" title="Delete All Cards" sub={cards.length + ' saved on this device'} onPress={() => cards.length && Alert.alert('Delete all cards?', '', [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive', onPress: () => setCards([]) }])} />
+                    </Group>
                     {DEV_TOOLS && <>
-                      <Text style={{ color: t.sub, marginTop: 16 }}>DEVELOPER (hidden in release builds)</Text>
-                      {group([row('Dev Mode: Toggle Pro Status', pro ? 'Pro is ON' : 'Pro is OFF', () => { setPro(!pro); if (pro) setGeo(false); }, <Switch value={pro} onValueChange={v => { setPro(v); if (!v) setGeo(false); }} />),
-                        ...['CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks'].map(n => row(`📍 Simulate: Walking into ${n}`, '', () => notifyNear([n]))),
-                        row('📍 Simulate: Mall with 3 stores', 'CVS + Target + Starbucks', () => notifyNear(['CVS', 'Target', 'Starbucks']))])}
+                      <Sec t={t}>Developer</Sec>
+                      <Group t={t}><Row t={t} ico="🛠" bg="#636366" title="Developer mode" sub="Test tools. Remove in the production build." onPress={() => setDev(!dev)} right={sw(dev, setDev)} /></Group>
+                      {dev && (
+                        <Group t={t}>
+                          <Row t={t} title="Dev Mode: Toggle Pro Status" sub={pro ? 'Pro is ON' : 'Pro is OFF'} onPress={() => toggleDevPro(!pro)} right={sw(pro, toggleDevPro)} />
+                          <Text style={{ color: t.sub, fontSize: 13, padding: 12, paddingBottom: 4 }}>Geofencing simulator (needs Pro and Geo-alerts ON)</Text>
+                          <Row t={t} title="🔔 Send test notification" sub="Uses your first card" onPress={() => cards.length ? notifyNear([cards[0].name]) : say('Add a card first')} right={<View />} />
+                          {SIM.map(n => <Row key={n} t={t} title={`📍 Simulate: Walking into ${n}`} onPress={() => notifyNear([n])} right={<View />} />)}
+                          <Row t={t} title="📍 Simulate: Mall with 3 stores" sub="CVS + Target + Starbucks" onPress={() => notifyNear(['CVS', 'Target', 'Starbucks'])} right={<View />} />
+                        </Group>)}
                     </>}
+                    <Text style={{ color: t.sub, fontSize: 12, textAlign: 'center', marginTop: 12 }}>Store locations © OpenStreetMap contributors</Text>
+                    <Text style={{ color: t.sub, fontSize: 13, textAlign: 'center', marginTop: 6 }}>TapPass 1.0.0</Text>
                   </>}
                 </ScrollView>
 
-                <View style={{ flexDirection: 'row', backgroundColor: t.card, paddingVertical: 10 }}>
-                  {[['w', '💳 Wallet'], ['s', '⚙️ Settings']].map(([k, l]) => <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1, alignItems: 'center' }}>
-                    <Text style={{ color: tab === k ? t.accent : t.sub, fontWeight: '600' }}>{l}</Text></Pressable>)}
+                {toast ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 90, alignItems: 'center' }}>
+                  <Text style={{ backgroundColor: 'rgba(30,30,32,.92)', color: '#fff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 99, overflow: 'hidden', fontSize: 14 }}>{toast}</Text></View> : null}
+
+                <View style={{ flexDirection: 'row', backgroundColor: t.card, borderTopWidth: 0.5, borderColor: t.line, paddingTop: 8, paddingBottom: 6 }}>
+                  {[['w', 'Wallet'], ['s', 'Settings']].map(([k, l]) => (
+                    <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1, alignItems: 'center', gap: 2 }}>
+                      <TabIcon kind={k} color={tab === k ? t.accent : t.sub} />
+                      <Text style={{ fontSize: 12, color: tab === k ? t.accent : t.sub }}>{l}</Text>
+                    </Pressable>))}
                 </View>
 
                 <AddCard visible={adding} t={t} onClose={() => setAdding(false)} onSave={c => { setCards([...cards, { id: String(Date.now()), ...c }]); setAdding(false); }} />
@@ -187,16 +308,22 @@ jobs:
                     <Text onPress={() => setPaywall(false)} style={{ color: t.sub, textAlign: 'right', fontSize: 20 }}>✕</Text>
                     <Text style={{ fontSize: 44, textAlign: 'center' }}>✨</Text>
                     <Text style={{ color: t.text, fontSize: 30, fontWeight: '800', textAlign: 'center' }}>Try 14 Days Free</Text>
-                    <Text style={{ color: t.sub, textAlign: 'center', marginVertical: 8 }}>Never search for your loyalty card at the checkout again.</Text>
-                    <Text style={{ color: t.text, lineHeight: 26, marginVertical: 12 }}>✓ Unlimited cards{'\n'}✓ GPS Geo-alerts at your favorite stores{'\n'}✓ Cancel anytime</Text>
+                    <Text style={{ color: t.sub, textAlign: 'center', marginVertical: 8, fontSize: 16 }}>Never search for your loyalty card at the checkout again.</Text>
+                    <Text style={{ color: t.text, lineHeight: 26, marginVertical: 12, fontSize: 16 }}>✓ Unlimited cards{'\n'}✓ GPS Geo-alerts at your favorite stores{'\n'}✓ Cancel anytime</Text>
                     {[['monthly', 'Monthly - $2.99 / month'], ['yearly', 'Yearly (Save 45%) - $19.99 / year']].map(([k, l]) => (
-                      <Pressable key={k} onPress={() => setPlan(k)} style={{ backgroundColor: t.card, borderRadius: 14, padding: 14, marginVertical: 6, borderWidth: 2, borderColor: plan === k ? t.accent : 'transparent' }}>
+                      <Pressable key={k} onPress={() => setPlan(k)} style={{ backgroundColor: t.card, borderRadius: 14, padding: 14, marginVertical: 8, borderWidth: 2, borderColor: plan === k ? t.accent : t.line }}>
+                        {k === 'yearly' && <Text style={{ position: 'absolute', right: 12, top: -10, backgroundColor: '#ff9f0a', color: '#fff', fontSize: 12, fontWeight: '700', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 99, overflow: 'hidden' }}>Save 45%</Text>}
                         <Text style={{ color: t.text, fontSize: 17, fontWeight: '700' }}>{l}</Text><Text style={{ color: t.sub }}>(after 14-day free trial)</Text></Pressable>))}
                     {/* TODO: replace with RevenueCat: Purchases.purchasePackage(...) and Purchases.restorePurchases() */}
                     <Pressable onPress={() => { setPro(true); setPaywall(false); }} style={{ backgroundColor: t.accent, borderRadius: 14, padding: 15, marginTop: 10 }}>
                       <Text style={{ color: '#fff', textAlign: 'center', fontWeight: '700', fontSize: 17 }}>Start 14-Day Free Trial</Text></Pressable>
-                    <Text onPress={() => Alert.alert(pro ? 'Purchases restored' : 'No active subscription found')} style={{ color: t.accent, textAlign: 'center', marginTop: 14 }}>Restore Purchases</Text>
-                    {DEV_TOOLS && <View style={{ marginTop: 20 }}>{group(row('Dev Mode: Toggle Pro Status', pro ? 'Pro is ON' : 'Pro is OFF', () => setPro(!pro), <Switch value={pro} onValueChange={setPro} />))}</View>}
+                    <Text style={{ color: t.sub, textAlign: 'center', fontSize: 13, marginTop: 10 }}>Prototype only. No real payment is made.</Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 18, marginTop: 8 }}>
+                      <Text onPress={() => Alert.alert(pro ? 'Purchases restored' : 'No active subscription found')} style={{ color: t.accent, fontSize: 13 }}>Restore Purchases</Text>
+                      <Text onPress={() => Alert.alert('Opens terms of use')} style={{ color: t.accent, fontSize: 13 }}>Terms</Text>
+                      <Text onPress={() => Alert.alert('Opens privacy policy')} style={{ color: t.accent, fontSize: 13 }}>Privacy</Text>
+                    </View>
+                    {DEV_TOOLS && dev && <Group t={t}><Row t={t} title="Dev Mode: Toggle Pro Status" sub={pro ? 'Pro is ON' : 'Pro is OFF'} onPress={() => toggleDevPro(!pro)} right={sw(pro, toggleDevPro)} /></Group>}
                   </ScrollView>
                 </Modal>
 
@@ -222,6 +349,16 @@ jobs:
               </SafeAreaView>
             );
           }
+
+          const fold = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/g, 'l');
+          // "zab" / "Żab" -> "Żabka": so the card name matches the store name used for geofencing
+          const resolveName = n => {
+            const q = fold(n.trim());
+            const hit = STORES.find(s => fold(s.n) === q);
+            if (hit) return hit.n;
+            const p = q ? STORES.filter(s => fold(s.n).startsWith(q)) : [];
+            return p.length === 1 ? p[0].n : n.trim();
+          };
 
           function AddCard({ visible, onClose, onSave, t }) {
             const [name, setName] = useState('');
@@ -275,7 +412,7 @@ jobs:
                       <Text style={{ textAlign: 'center', color: t.text, fontWeight: type === k ? '700' : '400' }}>{l}</Text></Pressable>)}
                   </View>
                   {num.length > 0 && <View style={{ marginBottom: 12 }}><Code card={{ num, type, fmt }} width={260} /></View>}
-                  <Pressable disabled={!ok} onPress={() => onSave({ name: name.trim(), num, type, fmt })} style={{ backgroundColor: t.accent, borderRadius: 14, padding: 15, opacity: ok ? 1 : 0.4 }}>
+                  <Pressable disabled={!ok} onPress={() => onSave({ name: resolveName(name), num, type, fmt })} style={{ backgroundColor: t.accent, borderRadius: 14, padding: 15, opacity: ok ? 1 : 0.4 }}>
                     <Text style={{ color: '#fff', textAlign: 'center', fontWeight: '700', fontSize: 17 }}>Save Card</Text></Pressable>
                 </ScrollView>
 
@@ -417,16 +554,32 @@ jobs:
             }
           }
 
+          const setStatus = s => AsyncStorage.setItem('geoStatus', JSON.stringify({ t: Date.now(), ...s }));
+          export const getStatus = () => load('geoStatus');
+
           // Registers the nearest stores of the user's cards plus one big "refresh zone".
+          // If the user is ALREADY inside a store radius, notify right away (Android only fires on a fresh "enter").
           export async function refreshGeofences(cards) {
-            const { coords } = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-            const { latitude: lat, longitude: lng } = coords;
-            const names = [...new Set(cards.map(c => c.name))];
-            const stores = (await getStores(names, lat, lng)).map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d).slice(0, MAX_REGIONS);
-            const regions = stores.map(p => ({ identifier: `${p.name}::${p.lat.toFixed(4)},${p.lng.toFixed(4)}`, latitude: p.lat, longitude: p.lng, radius: RADIUS, notifyOnEnter: true, notifyOnExit: false }));
-            regions.push({ identifier: REFRESH_ID, latitude: lat, longitude: lng, radius: REFRESH_RADIUS, notifyOnEnter: false, notifyOnExit: true });
-            await Location.startGeofencingAsync(TASK, regions);
-            return stores.length;
+            try {
+              const { coords } = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+              const { latitude: lat, longitude: lng } = coords;
+              const names = [...new Set(cards.map(c => c.name))];
+              const stores = (await getStores(names, lat, lng)).map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d).slice(0, MAX_REGIONS);
+              const regions = stores.map(p => ({ identifier: `${p.name}::${p.lat.toFixed(4)},${p.lng.toFixed(4)}`, latitude: p.lat, longitude: p.lng, radius: RADIUS, notifyOnEnter: true, notifyOnExit: false }));
+              regions.push({ identifier: REFRESH_ID, latitude: lat, longitude: lng, radius: REFRESH_RADIUS, notifyOnEnter: false, notifyOnExit: true });
+              await Location.startGeofencingAsync(TASK, regions);
+              const fresh = [];
+              for (const n of new Set(stores.filter(s => s.d <= RADIUS).map(s => s.name))) {
+                const key = 'last:' + n;
+                if (Date.now() - Number((await AsyncStorage.getItem(key)) || 0) >= COOLDOWN) { await AsyncStorage.setItem(key, String(Date.now())); fresh.push(n); }
+              }
+              if (fresh.length) await notifyNear(fresh);
+              await setStatus({ count: stores.length, nearest: stores[0] ? { name: stores[0].name, d: Math.round(stores[0].d) } : null });
+              return stores.length;
+            } catch (e) {
+              await setStatus({ err: String(e.message || e).slice(0, 120) });
+              throw e;
+            }
           }
 
           export async function stopGeo() {
@@ -561,7 +714,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient
           npm install react-native-qrcode-svg jsbarcode
 
       - name: Create .env (EXPO_PUBLIC_* trafia do aplikacji = publiczne)
