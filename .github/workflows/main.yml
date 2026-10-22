@@ -43,15 +43,17 @@ jobs:
           mkdir -p assets
           cat > App.js <<'TAPPASS_EOF'
           import React, { useEffect, useState } from 'react';
-          import { View, Text, Pressable, Modal, TextInput, FlatList, ScrollView, Switch, Alert, Image, useColorScheme } from 'react-native';
-          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { View, Text as RNText, Pressable, Modal, TextInput as RNTextInput, FlatList, ScrollView, Alert, StyleSheet, useColorScheme } from 'react-native';
+          import { StatusBar } from 'expo-status-bar';
+          import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold, Inter_800ExtraBold } from '@expo-google-fonts/inter';
+          import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import * as Notifications from 'expo-notifications';
           import * as Brightness from 'expo-brightness';
           import * as ImagePicker from 'expo-image-picker';
           import { CameraView, useCameraPermissions } from 'expo-camera';
           import { LinearGradient } from 'expo-linear-gradient';
-          import Svg, { Rect, Path, Circle } from 'react-native-svg';
+          import Svg, { Rect, Path, Circle, Defs, LinearGradient as SvgGradient, Stop, G } from 'react-native-svg';
           import QRCode from 'react-native-qrcode-svg';
           import JsBarcode from 'jsbarcode';
           import { STORES } from './stores';
@@ -79,6 +81,48 @@ jobs:
             return { n: name, c: `hsl(${h},55%,42%)`, l: (name.trim()[0] || '?').toUpperCase(), t: '#fff', d: darken(`hsl(${h},55%,42%)`) };
           };
           const cleanCode = v => { v = v.replace(/[^\x20-\x7E]/g, '').trim(); return (/^[\d\s-]+$/.test(v) ? v.replace(/[\s-]/g, '') : v).slice(0, 120); };
+
+          // ---- Inter font for every Text / TextInput (same look on all phones) ----
+          const FONT = { 400: 'Inter_400Regular', 500: 'Inter_500Medium', 600: 'Inter_600SemiBold', 700: 'Inter_700Bold', 800: 'Inter_800ExtraBold', 900: 'Inter_800ExtraBold', normal: 'Inter_400Regular', bold: 'Inter_700Bold' };
+          function Text({ style, ...p }) {
+            const { fontWeight, ...rest } = StyleSheet.flatten(style) || {};
+            return <RNText {...p} style={[rest, { fontFamily: FONT[fontWeight || 400] || FONT[400] }]} />;
+          }
+          function TextInput({ style, ...p }) {
+            return <RNTextInput {...p} style={[style, { fontFamily: FONT[400] }]} />;
+          }
+
+          // ---- App logo (same artwork as the icon and the HTML prototype) ----
+          const LOGO_ARCS = [['M640.1 386.6A45 45 0 0 1 640.1 453.4', 1], ['M673.6 349.4A95 95 0 0 1 673.6 490.6', 0.7], ['M707.0 312.2A145 145 0 0 1 707.0 527.8', 0.45]];
+          const LOGO_BARS = [[212,14], [236,8], [254,22], [286,10], [306,16], [332,8], [350,24], [384,12], [406,8], [424,20], [454,10], [474,16], [500,8], [518,22], [550,12], [572,10]];
+          function Logo({ size = 34 }) {
+            return (
+              <Svg width={size} height={size} viewBox="0 0 1024 1024">
+                <Defs><SvgGradient id="lg" x1="0" y1="0" x2="1" y2="1"><Stop offset="0" stopColor="#2f95ff" /><Stop offset="1" stopColor="#5a3df0" /></SvgGradient></Defs>
+                <Rect width={1024} height={1024} rx={230} fill="url(#lg)" />
+                <Rect x={162} y={292} width={700} height={440} rx={64} fill="#fff" />
+                <Rect x={212} y={342} width={150} height={28} rx={14} fill="#2f7bff" />
+                <G fill="none" stroke="#2f7bff" strokeLinecap="round" strokeWidth={30}>
+                  {LOGO_ARCS.map(([d, o]) => <Path key={d} d={d} opacity={o} />)}
+                </G>
+                {LOGO_BARS.map(([x, w]) => <Rect key={x} x={x} y={566} width={w} height={92} rx={2} fill="#22307a" />)}
+              </Svg>
+            );
+          }
+
+          // ---- iOS-style switch (identical on Android) ----
+          function IosSwitch({ value, onValueChange }) {
+            return (
+              <Pressable onPress={() => onValueChange(!value)} hitSlop={8} style={{ width: 51, height: 31, borderRadius: 16, backgroundColor: value ? '#34c759' : 'rgba(120,120,128,0.32)', justifyContent: 'center' }}>
+                <View style={{ position: 'absolute', top: 2, left: value ? 22 : 2, width: 27, height: 27, borderRadius: 14, backgroundColor: '#fff', elevation: 3, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 2 } }} />
+              </Pressable>
+            );
+          }
+          const CloseBtn = ({ t, onPress }) => (
+            <Pressable onPress={onPress} style={{ alignSelf: 'flex-end', width: 30, height: 30, borderRadius: 15, backgroundColor: t.line, alignItems: 'center', justifyContent: 'center', marginBottom: 6 }}>
+              <Text style={{ color: t.sub, fontSize: 15 }}>✕</Text>
+            </Pressable>
+          );
 
           function Tile({ name, size = 46, translucent }) {
             const b = brand(name);
@@ -130,8 +174,10 @@ jobs:
             </Svg>
           );
 
-          export default function App() {
+          function Main() {
             const sys = useColorScheme();
+            const insets = useSafeAreaInsets();
+            const [fontsLoaded] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold, Inter_800ExtraBold });
             const [ready, setReady] = useState(false);
             const [cards, setCards] = useState([]);
             const [pro, setPro] = useState(false);
@@ -190,7 +236,7 @@ jobs:
             };
             const toggleDevPro = v => { setPro(v); if (!v) setGeo(false); };
             const restore = () => say(pro ? 'Purchases restored. TapPass Pro is active.' : 'No active subscription found.');
-            const sw = (v, f) => <Switch value={v} onValueChange={f} trackColor={{ true: t.green }} />;
+            const sw = (v, f) => <IosSwitch value={v} onValueChange={f} />;
             const geoRow = (
               <Group t={t}><Row t={t} ico="📍" bg="#007aff" title={'GPS Geo-alerts' + (pro ? '' : ' 🔒')} sub="Show your card automatically near a store" onPress={toggleGeo} right={sw(geo && pro, toggleGeo)} /></Group>
             );
@@ -204,14 +250,16 @@ jobs:
               : gstat.nearest ? `Watching ${gstat.count} stores · nearest: ${gstat.nearest.name}, ${gstat.nearest.d} m` : 'No stores of your cards found nearby';
             const title = txt => <Text style={{ color: t.text, fontSize: 32, fontWeight: '800', letterSpacing: -0.5 }}>{txt}</Text>;
 
+            if (!fontsLoaded) return null;
             return (
-              <SafeAreaView style={{ flex: 1, backgroundColor: t.bg }}>
+              <SafeAreaView edges={['top', 'left', 'right']} style={{ flex: 1, backgroundColor: t.bg }}>
+                <StatusBar style={t.bg === '#000' ? 'light' : 'dark'} />
                 <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }}>
                   {tab === 'w' ? <>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
                       <View style={{ gap: 6 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                          <Image source={require('./assets/icon.png')} style={{ width: 34, height: 34, borderRadius: 8 }} />
+                          <Logo size={34} />
                           {title('TapPass')}
                         </View>
                         {pro
@@ -293,7 +341,7 @@ jobs:
                 {toast ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 90, alignItems: 'center' }}>
                   <Text style={{ backgroundColor: 'rgba(30,30,32,.92)', color: '#fff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 99, overflow: 'hidden', fontSize: 14 }}>{toast}</Text></View> : null}
 
-                <View style={{ flexDirection: 'row', backgroundColor: t.card, borderTopWidth: 0.5, borderColor: t.line, paddingTop: 8, paddingBottom: 6 }}>
+                <View style={{ flexDirection: 'row', backgroundColor: t.card, borderTopWidth: 0.5, borderColor: t.line, paddingTop: 8, paddingBottom: 6 + insets.bottom }}>
                   {[['w', 'Wallet'], ['s', 'Settings']].map(([k, l]) => (
                     <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1, alignItems: 'center', gap: 2 }}>
                       <TabIcon kind={k} color={tab === k ? t.accent : t.sub} />
@@ -305,7 +353,7 @@ jobs:
 
                 <Modal visible={paywall} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setPaywall(false)}>
                   <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ padding: 20 }}>
-                    <Text onPress={() => setPaywall(false)} style={{ color: t.sub, textAlign: 'right', fontSize: 20 }}>✕</Text>
+                    <CloseBtn t={t} onPress={() => setPaywall(false)} />
                     <Text style={{ fontSize: 44, textAlign: 'center' }}>✨</Text>
                     <Text style={{ color: t.text, fontSize: 30, fontWeight: '800', textAlign: 'center' }}>Try 14 Days Free</Text>
                     <Text style={{ color: t.sub, textAlign: 'center', marginVertical: 8, fontSize: 16 }}>Never search for your loyalty card at the checkout again.</Text>
@@ -385,12 +433,12 @@ jobs:
               apply((await CameraView.scanFromURLAsync(res.assets[0].uri, SCAN_TYPES))[0]);
             };
             const ok = name.trim() && num.length >= 4;
-            const inp = { backgroundColor: t.card, color: t.text, borderRadius: 12, padding: 12, fontSize: 17, marginVertical: 6 };
+            const inp = { backgroundColor: t.card, color: t.text, borderRadius: 12, borderWidth: 1, borderColor: t.line, paddingVertical: 12, paddingHorizontal: 14, fontSize: 17, marginTop: 6, marginBottom: 12 };
 
             return (
               <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
                 <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ padding: 18 }} keyboardShouldPersistTaps="handled">
-                  <Text onPress={onClose} style={{ color: t.sub, textAlign: 'right', fontSize: 20 }}>✕</Text>
+                  <CloseBtn t={t} onPress={onClose} />
                   <Text style={{ color: t.text, fontSize: 24, fontWeight: '800', marginBottom: 12 }}>Add Card</Text>
                   <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
                     {[['📷', 'Scan with camera', openScanner], ['🖼', 'Import code image', importImage]].map(([i, l, f]) => (
@@ -426,6 +474,10 @@ jobs:
                 </Modal>
               </Modal>
             );
+          }
+
+          export default function App() {
+            return <SafeAreaProvider><Main /></SafeAreaProvider>;
           }
           TAPPASS_EOF
           cat > geo.js <<'TAPPASS_EOF'
@@ -714,8 +766,8 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient
-          npm install react-native-qrcode-svg jsbarcode
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
+          npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/inter
 
       - name: Create .env (EXPO_PUBLIC_* trafia do aplikacji = publiczne)
         run: |
