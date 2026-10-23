@@ -14,7 +14,7 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}   # sekrety są opcjonalne
     steps:
@@ -1263,12 +1263,6 @@ jobs:
           for a in ALIASES:                      # one entry per spelling (Żabka / Zabka fold to the same text)
               if fold(a) not in FA.values(): FA[a] = fold(a)
           ALIASES = list(FA)
-          NEEDLES = set()
-          for a in ALIASES:
-              for v in {a, a.replace("'", '’'), a.replace('’', "'")}:
-                  NEEDLES.add(v.lower().encode())
-                  NEEDLES.add(json.dumps(v)[1:-1].lower().encode())   # Ż-style escapes
-
           def match(label):
               f = fold(label)
               if not f: return []
@@ -1283,36 +1277,39 @@ jobs:
               if not m: raise SystemExit('no output.zip link found')
               return m.group(0)
 
-          def features(raw):
-              try:
-                  d = json.loads(raw)
-                  return d.get('features', []) if isinstance(d, dict) else []
-              except ValueError:
-                  out = []
-                  for line in raw.splitlines():
-                      line = line.strip().rstrip(b',')
-                      if line.startswith(b'{'):
-                          try: out.append(json.loads(line))
-                          except ValueError: pass
-                  return out
+          def compact(s):
+              return re.sub(r'[^a-z0-9]', '', fold(s).replace('&', 'and'))
+
+          # spider files are named after the brand (tesco_gb, marks_and_spencer_gb, zabka_pl ...)
+          TOKENS = {compact(a) for a in ALIASES} | {'seveneleven', 'mcdonald', 'chickfila', 'dunkin', 'sainsbury'}
+          TOKENS = {t for t in TOKENS if t}
+
+          def wanted(filename):
+              n = compact(filename.rsplit('/', 1)[-1].split('.')[0])
+              return any(t in n for t in TOKENS)
 
           def main(zip_path):
               db = {a: set() for a in ALIASES}
+              files = 0
               with zipfile.ZipFile(zip_path) as z:
                   for info in z.infolist():
-                      if info.is_dir(): continue
-                      raw = z.read(info)
-                      low = raw.lower()
-                      if not any(n in low for n in NEEDLES): continue
-                      for f in features(raw):
-                          g, p = f.get('geometry') or {}, f.get('properties') or {}
-                          if g.get('type') != 'Point': continue
-                          try: lng, lat = float(g['coordinates'][0]), float(g['coordinates'][1])
-                          except (KeyError, IndexError, TypeError, ValueError): continue
-                          if not inside(lat, lng): continue
-                          hits = match(p.get('brand')) or match(p.get('name'))
-                          for a in hits:
-                              db[a].add((round(lat * 1e4), round(lng * 1e4)))   # ~11 m grid removes duplicates
+                      if info.is_dir() or not wanted(info.filename): continue
+                      files += 1
+                      with z.open(info) as fh:                       # stream line by line: some files are huge
+                          for line in io.TextIOWrapper(fh, encoding='utf-8', errors='replace'):
+                              line = line.strip().rstrip(',')
+                              if not line.startswith('{') or '"Feature"' not in line: continue
+                              try: f = json.loads(line)
+                              except ValueError: continue
+                              if f.get('type') != 'Feature': continue
+                              g, p = f.get('geometry') or {}, f.get('properties') or {}
+                              if g.get('type') != 'Point': continue
+                              try: lng, lat = float(g['coordinates'][0]), float(g['coordinates'][1])
+                              except (KeyError, IndexError, TypeError, ValueError): continue
+                              if not inside(lat, lng): continue
+                              for a in (match(p.get('brand')) or match(p.get('name'))):
+                                  db[a].add((round(lat * 1e4), round(lng * 1e4)))   # ~11 m grid removes duplicates
+              print('spider files read:', files)
               out = {}
               for a, pts in sorted(db.items()):
                   if not pts: continue
@@ -1508,7 +1505,8 @@ jobs:
           node --input-type=module -e "import('/tmp/stores.mjs').then(m=>{const a=new Set(m.STORES.map(s=>s.n));Object.values(m.GEO_ALIAS).flat().forEach(x=>a.add(x));console.log(JSON.stringify([...a]))})" > /tmp/aliases.json
           URL=$(python3 build_storedb.py /tmp/aliases.json /tmp/unused.json)
           echo "Downloading $URL"
-          curl -fL --retry 3 -A "TapPass-build/1.0 (support@tappass.app)" -o /tmp/atp.zip "$URL"
+          df -h / /tmp | tail -2
+          curl -fL --retry 3 -sS -A "TapPass-build/1.0 (support@tappass.app)" -o /tmp/atp.zip "$URL"
           python3 build_storedb.py /tmp/aliases.json /tmp/storedb.json /tmp/atp.zip
           rm -f /tmp/atp.zip
           cp /tmp/storedb.json storedb-cache.json
