@@ -1507,14 +1507,16 @@ jobs:
           echo "Downloading $URL"
           df -h / /tmp | tail -2
           curl -fL --retry 3 -sS -A "TapPass-build/1.0 (support@tappass.app)" -o /tmp/atp.zip "$URL"
-          python3 build_storedb.py /tmp/aliases.json /tmp/storedb.json /tmp/atp.zip
+          python3 build_storedb.py /tmp/aliases.json /tmp/storedb.json /tmp/atp.zip | tee /tmp/db.log
+          echo "::notice title=Store database::$(grep -E '^(total|spider)' /tmp/db.log | tr '\n' ' ')"
+          echo "::notice title=Store counts::$(grep -vE '^(total|spider)' /tmp/db.log | tr '\n' ';' | cut -c1-3000)"
           rm -f /tmp/atp.zip
           cp /tmp/storedb.json storedb-cache.json
 
       - name: Use store database
         run: |
           mkdir -p assets
-          if [ -s storedb-cache.json ]; then cp storedb-cache.json assets/storedb.json; else echo '{}' > assets/storedb.json; fi
+          if [ -s storedb-cache.json ]; then cp storedb-cache.json assets/storedb.json; else echo '{}' > assets/storedb.json; echo "::warning title=Store database::empty - app will use online lookup only"; fi
           ls -la assets/storedb.json
 
       - name: Save store database cache
