@@ -50,6 +50,8 @@ jobs:
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import * as Notifications from 'expo-notifications';
           import * as Brightness from 'expo-brightness';
+          import * as Battery from 'expo-battery';
+          import * as Location from 'expo-location';
           import * as ImagePicker from 'expo-image-picker';
           import { CameraView, useCameraPermissions } from 'expo-camera';
           import { LinearGradient } from 'expo-linear-gradient';
@@ -345,12 +347,26 @@ jobs:
             };
             // keep geofences in sync (needs Pro + toggle + at least one card)
             useEffect(() => { if (ready) syncGeo(); }, [geo, pro, cards, reliable, ready]);
+            // ---- is everything set so alerts can arrive with the app closed? ----
+            const [health, setHealth] = useState(null);
+            const checkHealth = async () => {
+              const r = { bg: false, precise: true, notif: false, battery: true };
+              try { r.bg = (await Location.getBackgroundPermissionsAsync()).granted; } catch (e) {}
+              try { const f = await Location.getForegroundPermissionsAsync(); r.precise = f.android ? f.android.accuracy !== 'coarse' : f.ios ? f.ios.accuracy !== 'reduced' : true; } catch (e) {}
+              try { r.notif = (await Notifications.getPermissionsAsync()).granted; } catch (e) {}
+              if (Platform.OS === 'android') { try { r.battery = !(await Battery.isBatteryOptimizationEnabledAsync()); } catch (e) {} }
+              setHealth(r);
+              return r;
+            };
+            const healthIssues = health ? ['bg', 'precise', 'notif', 'battery'].filter(k => !health[k]) : [];
+            useEffect(() => { if (ready && geo && pro) checkHealth(); }, [geo, pro, ready]);
             // back in the app: pick up alerts logged in the background and retry a failed lookup
             useEffect(() => {
               const sub = AppState.addEventListener('change', async s => {
                 if (s !== 'active') return;
                 try { const l = JSON.parse((await AsyncStorage.getItem('log')) || '[]'); setLog(l); } catch (e) {}
                 syncGeo();
+                checkHealth();
               });
               return () => sub.remove();
             });
@@ -385,7 +401,9 @@ jobs:
             const toggleGeo = async () => {
               if (!pro) return setSheet('pay');
               if (!geo && !(await askPermissions())) return Alert.alert('Permission needed', 'Allow location "Always" (Allow all the time) and notifications in system settings.', [{ text: 'Cancel' }, { text: 'Open settings', onPress: () => Linking.openSettings() }]);
+              const turningOn = !geo;
               setGeo(!geo);
+              if (turningOn) { const h = await checkHealth(); if (!h.bg || !h.precise || !h.notif || !h.battery) setSheet('health'); }
             };
             const toggleDevPro = () => { const v = !pro; setPro(v); if (!v) setGeo(false); };
             const restore = () => say(pro ? 'Purchases restored. TapPass Pro is active.' : 'No active subscription found.');
@@ -407,7 +425,7 @@ jobs:
             };
             const showLog = async () => Alert.alert('Geo log', ((await getLog()) || ['(empty)']).slice(0, 14).join('\n'));
             const geoOn = geo && pro;
-            const geoStatus = !pro ? 'Pro feature' : !geo ? 'Off · tap to turn on' : !cards.length ? 'Add a card first' : !gstat ? 'Finding stores…'
+            const geoStatus = !pro ? 'Pro feature' : !geo ? 'Off · tap to turn on' : healthIssues.length ? '⚠️ Needs attention' : !cards.length ? 'Add a card first' : !gstat ? 'Finding stores…'
               : gstat.err ? gstat.err
               : gstat.near ? `${gstat.near} ${gstat.near === 1 ? 'store' : 'stores'} within 1 km` : 'Watching nearby stores';
             const goTab = k => { setTab(k); scroll.current?.scrollTo({ y: 0, animated: false }); };
@@ -469,6 +487,15 @@ jobs:
                     <Sw on={geoOn} s={0.72} />
                   </Pressable>
                 </View>
+                {geo && pro && healthIssues.length > 0 && (
+                  <Pressable onPress={() => setSheet('health')} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#ff9500', borderRadius: 20, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 12 }}>
+                    <Text style={{ fontSize: 22 }}>⚠️</Text>
+                    <View style={{ flex: 1 }}>
+                      <B style={{ color: '#fff', fontSize: 15 }}>Geo-alerts may not work</B>
+                      <Text style={{ color: '#fff', fontSize: 13, opacity: 0.95 }}>{healthIssues.length === 1 ? '1 setting needs' : healthIssues.length + ' settings need'} your attention. Tap to fix.</Text>
+                    </View>
+                    <Text style={{ color: '#fff', fontSize: 18 }}>›</Text>
+                  </Pressable>)}
                 <Panel title="My cards" right={<Link onPress={openAdd}>+ Add Card</Link>}>
                   {n ? <Cats items={cats} value={cc} onPick={setCat} /> : null}
                   {shown.length ? shown.map((c, i) => <WalletCard key={c.id} c={c} last={i === shown.length - 1} />) : <Empty>No cards yet.{'\n'}Tap “+ Add Card” to start.</Empty>}
@@ -577,6 +604,7 @@ jobs:
               </Group>
               <Sec>Preferences</Sec>
               {geoRow}
+              {geoOn && <Group><Row ico={healthIssues.length ? '⚠️' : '✅'} bg={healthIssues.length ? '#ff9500' : '#34c759'} title="Alert reliability check" sub={healthIssues.length ? healthIssues.length + ' setting(s) need attention' : 'Everything is set'} onPress={() => { checkHealth(); setSheet('health'); }} last /></Group>}
               {Platform.OS === 'android' && geoOn && <Group>
                 <Row ico="🔋" bg="#ff9500" title="Reliable mode" sub="Keeps a small notification so Android doesn’t stop alerts" onPress={() => setReliable(!reliable)} right={<Sw on={reliable} />} />
                 <Row ico="⚙️" bg="#8e8e93" title="Battery & background" sub="Set TapPass battery usage to Unrestricted" onPress={() => Linking.openSettings()} last />
@@ -696,6 +724,37 @@ jobs:
               {cs.filter(c => cards.some(x => x.id === c.id)).map((c, i, a) => <WalletCard key={c.id} c={c} last={i === a.length - 1} />)}
             </Sheet>;
 
+            const openBattery = async () => {
+              try { await Linking.sendIntent('android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS'); } catch (e) { Linking.openSettings(); }
+            };
+            const healthSheet = () => {
+              const h = health || {};
+              const items = [
+                ['bg', '📍', 'Location: “Allow all the time”', 'Needed so TapPass can notice a store while the app is closed.', 'Open settings', () => Linking.openSettings()],
+                ['precise', '🎯', 'Precise location', 'Approximate location can be off by 1–3 km, which is too far to spot a store.', 'Open settings', () => Linking.openSettings()],
+                ['notif', '🔔', 'Notifications allowed', 'Without them the alert cannot appear.', 'Open settings', () => Linking.openSettings()],
+                ...(Platform.OS === 'android' ? [['battery', '🔋', 'Battery: “Unrestricted”', 'Many phones put apps to sleep to save battery, and then alerts stop. Find TapPass on the list and choose “Don’t optimise” / “Unrestricted”.', 'Fix battery setting', openBattery]] : []),
+              ];
+              return <Sheet onClose={() => setSheet(null)}>
+                <H2>Make alerts reliable</H2>
+                <Text style={[muted, { marginTop: -6, marginBottom: 14 }]}>Geo-alerts work in the background, so your phone has to allow it. Fix anything marked below, then come back to TapPass.</Text>
+                {items.map(([k, ico, title, text, btn, fn]) => { const ok = !!h[k]; return (
+                  <View key={k} style={[card, { borderRadius: 20, padding: 14, marginBottom: 10 }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                      <Text style={{ fontSize: 22 }}>{ico}</Text>
+                      <B style={{ flex: 1, color: t.text, fontSize: 15 }}>{title}</B>
+                      <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: ok ? t.green : '#ff3b30', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{ok ? '✓' : '!'}</Text></View>
+                    </View>
+                    {!ok && <>
+                      <Text style={{ color: t.sub, fontSize: 13, lineHeight: 18, marginTop: 8 }}>{text}</Text>
+                      <Pressable onPress={fn} style={{ marginTop: 10, alignSelf: 'flex-start', backgroundColor: t.accent, borderRadius: 99, paddingVertical: 9, paddingHorizontal: 16 }}><B style={{ color: t.on, fontSize: 14 }}>{btn}</B></Pressable>
+                    </>}
+                  </View>); })}
+                {healthIssues.length === 0 && <Text style={{ color: t.green, fontWeight: '700', textAlign: 'center', marginVertical: 8, fontSize: 15 }}>All set. Alerts will reach you even with the app closed.</Text>}
+                <Pressable onPress={() => { checkHealth(); }} style={{ width: '100%', padding: 14 }}><Text style={{ color: t.accent, fontWeight: '700', textAlign: 'center', fontSize: 15 }}>Check again</Text></Pressable>
+              </Sheet>;
+            };
+
             const tabs = [['w', 'Wallet'], ['a', 'Activity'], ['l', 'List'], ['s', 'Settings']];
             return (
               <Ctx.Provider value={{ t, insets, showInfo: () => setSheet('info'), openFull }}>
@@ -724,6 +783,7 @@ jobs:
                 {sheet === 'pay' && paywall()}
                 {sheet === 'info' && geoInfo()}
                 {sheet === 'pol' && policy()}
+                {sheet === 'health' && healthSheet()}
                 {sheet && sheet.choose && chooser(sheet.choose)}
 
                 <Modal visible={!!ask} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setAsk(null)}>
@@ -1540,7 +1600,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
           npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/plus-jakarta-sans
 
       - name: Create .env (EXPO_PUBLIC_* trafia do aplikacji = publiczne)
