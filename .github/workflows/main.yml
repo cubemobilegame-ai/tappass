@@ -894,12 +894,13 @@ jobs:
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import { Platform } from 'react-native';
           import { geoNames, cardsForLabel } from './stores';
+          import STORE_DB from './assets/storedb.json';   // built in CI from All the Places (official store locators)
 
           export const TASK = 'TAPPASS_GEOFENCE';
           export const LOC_TASK = 'TAPPASS_LOCATION';   // Android: location updates in a foreground service (survives battery savers)
           const CHANNEL = 'geo-alerts';
-          // Store locations come from OpenStreetMap via the Overpass API. Several public servers are tried in turn.
-          // They are meant for light use: point EXPO_PUBLIC_OVERPASS_URL at your own server/mirror before launch.
+          // Store locations: 1) the built-in database (works offline, no server needed),
+          // 2) only for chains missing there: OpenStreetMap via the Overpass API (several public servers in turn).
           const ENDPOINTS = [
             process.env.EXPO_PUBLIC_OVERPASS_URL,
             'https://overpass-api.de/api/interpreter',
@@ -917,6 +918,7 @@ jobs:
           const REFRESH_RADIUS = 2500;      // leaving this zone rebuilds the geofences around the new position
           const COOLDOWN = 4 * 3600e3;      // one alert per store per 4 h
           const BACKOFF = [30e3, 120e3, 300e3, 600e3, 900e3];   // retry after a failed lookup
+          const LOCAL_RADIUS = 20000;       // m, stores taken from the built-in database around the user
 
           Notifications.setNotificationHandler({
             handleNotification: async () => ({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false }),
@@ -1022,12 +1024,11 @@ jobs:
           TaskManager.defineTask(LOC_TASK, async ({ data, error }) => {
             if (error || !data?.locations?.length) return;
             const { latitude: lat, longitude: lng } = data.locations[data.locations.length - 1].coords;
-            const cache = await load('osm:cache');
+            const cache = await load('geo:near');           // stores around the last refresh point
             const retry = await load('geoRetry');
             const due = retry ? Date.now() >= retry.at : !cache;
             const moved = cache && dist(lat, lng, cache.lat, cache.lng) > CACHE_RANGE;
-            const waiting = retry && !due;                  // a lookup failed recently: keep using the saved stores until the retry time
-            if (due || (moved && !waiting)) { await refreshFromTask(due ? 'retry' : 'moved'); return; }
+            if (due || moved) { await refreshFromTask(due ? 'retry' : 'moved'); return; }
             if (!cache) return;
             const near = new Set();
             let best = null;
@@ -1116,7 +1117,7 @@ jobs:
 
           const offline = e => /network request failed|resolve|unknownhost|failed to connect/i.test(String(e?.message || e));
 
-          async function getStores(cards, lat, lng) {
+          async function onlineStores(cards, lat, lng) {
             const names = [...new Set(cards.map(c => c.name))];
             const cache = await load('osm:cache');
             const complete = cache && names.every(n => cache.names.includes(n));
@@ -1133,6 +1134,40 @@ jobs:
               if (cache) return { stores: cache.stores.filter(s => names.includes(s.name)), stale: err };   // keep working with saved stores
               throw new Error(err + ', retrying');
             }
+          }
+
+          // ---- built-in store database ----
+          const inDb = c => geoNames(c.name).some(a => STORE_DB[a]);
+          function localStores(cards, lat, lng, r) {
+            const out = [], seen = new Set();
+            const dLat = r / 111320, dLng = r / (111320 * Math.max(0.1, Math.cos(lat * Math.PI / 180)));
+            for (const c of cards) for (const a of geoNames(c.name)) {
+              const pts = STORE_DB[a]; if (!pts) continue;
+              for (let i = 0; i < pts.length; i += 2) {
+                const la = pts[i] / 1e5, lo = pts[i + 1] / 1e5;
+                if (Math.abs(la - lat) > dLat || Math.abs(lo - lng) > dLng) continue;
+                const key = `${c.name}:${pts[i]}:${pts[i + 1]}`;
+                if (seen.has(key)) continue;
+                seen.add(key); out.push({ name: c.name, lat: la, lng: lo });
+              }
+            }
+            return out;
+          }
+          export const dbInfo = () => ({ brands: Object.keys(STORE_DB).length, stores: Object.values(STORE_DB).reduce((n, v) => n + v.length / 2, 0) });
+
+          async function getStores(cards, lat, lng) {
+            const local = cards.filter(inDb), online = cards.filter(c => !inDb(c));
+            let stores = localStores(local, lat, lng, LOCAL_RADIUS), stale = null;
+            if (local.length) await glog(`built-in list: ${stores.length} stores of ${[...new Set(local.map(c => c.name))].join(', ')}`);
+            if (!online.length) { await AsyncStorage.removeItem('geoRetry'); return { stores }; }
+            try {
+              const r = await onlineStores(online, lat, lng);
+              stores = stores.concat(r.stores); stale = r.stale || null;
+            } catch (e) {
+              if (!local.length) throw e;              // nothing to fall back on
+              stale = e.message;                       // built-in stores keep working
+            }
+            return { stores, stale };
           }
 
           const setStatus = s => save('geoStatus', { t: Date.now(), ...s });
@@ -1172,7 +1207,9 @@ jobs:
               if (reliable) await startLoc().catch(e => glog('fg service failed ' + e.message)); else await stopLoc();
               const { latitude: lat, longitude: lng } = await position();
               const { stores: all, stale } = await getStores(cards, lat, lng);
-              const stores = all.map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d).slice(0, MAX_REGIONS);
+              const sorted = all.map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d);
+              await save('geo:near', { t: Date.now(), lat, lng, stores: sorted.filter(s => s.d <= CACHE_RANGE + 2000).map(({ name, lat: la, lng: lo }) => ({ name, lat: la, lng: lo })) });
+              const stores = sorted.slice(0, MAX_REGIONS);
               const regions = stores.map(p => ({ identifier: `${p.name}::${p.lat.toFixed(4)},${p.lng.toFixed(4)}`, latitude: p.lat, longitude: p.lng, radius: RADIUS, notifyOnEnter: true, notifyOnExit: false }));
               regions.push({ identifier: REFRESH_ID, latitude: lat, longitude: lng, radius: REFRESH_RADIUS, notifyOnEnter: false, notifyOnExit: true });
               await Location.startGeofencingAsync(TASK, regions);
@@ -1195,8 +1232,100 @@ jobs:
           export async function stopGeo() {
             if (await Location.hasStartedGeofencingAsync(TASK)) await Location.stopGeofencingAsync(TASK);
             await stopLoc();
-            await AsyncStorage.removeItem('geoRetry');
+            await AsyncStorage.multiRemove(['geoRetry', 'geo:near']);
           }
+          TAPPASS_EOF
+          cat > build_storedb.py <<'TAPPASS_EOF'
+          # Builds assets/storedb.json: locations of every chain TapPass knows, so the app does not
+          # depend on busy public map servers. Source: All the Places (official store locators, CC0),
+          # https://www.alltheplaces.xyz  ->  {"Tesco": [lat*1e5, lng*1e5, lat*1e5, lng*1e5, ...], ...}
+          import io, json, re, sys, unicodedata, urllib.request, zipfile
+
+          ALIASES = json.load(open(sys.argv[1], encoding='utf-8'))   # list of brand names the app matches
+          OUT = sys.argv[2]
+          UA = {'User-Agent': 'TapPass-build/1.0 (support@tappass.app)'}
+
+          REGIONS = [  # (lat_min, lat_max, lng_min, lng_max)
+              (49.8, 61.0, -10.8, 1.8),      # UK + Ireland
+              (49.0, 55.0, 14.1, 24.2),      # Poland (test stores)
+              (24.4, 49.5, -125.0, -66.9),   # USA mainland
+              (51.0, 72.0, -180.0, -129.0),  # Alaska
+              (18.9, 22.3, -160.3, -154.8),  # Hawaii
+          ]
+
+          def fold(s):
+              s = unicodedata.normalize('NFD', str(s or '').lower())
+              s = ''.join(c for c in s if not unicodedata.combining(c)).replace('ł', 'l')
+              s = re.sub(r"['’.]", '', s)
+              return re.sub(r'\s+', ' ', s).strip()
+
+          FA = {}
+          for a in ALIASES:                      # one entry per spelling (Żabka / Zabka fold to the same text)
+              if fold(a) not in FA.values(): FA[a] = fold(a)
+          ALIASES = list(FA)
+          NEEDLES = set()
+          for a in ALIASES:
+              for v in {a, a.replace("'", '’'), a.replace('’', "'")}:
+                  NEEDLES.add(v.lower().encode())
+                  NEEDLES.add(json.dumps(v)[1:-1].lower().encode())   # Ż-style escapes
+
+          def match(label):
+              f = fold(label)
+              if not f: return []
+              return [a for a, fa in FA.items() if f == fa or f.startswith(fa + ' ') or f.startswith(fa + '-')]
+
+          def inside(lat, lng):
+              return any(a <= lat <= b and c <= lng <= d for a, b, c, d in REGIONS)
+
+          def latest_zip():
+              html = urllib.request.urlopen(urllib.request.Request('https://data.alltheplaces.xyz/runs/latest/info_embed.html', headers=UA), timeout=60).read().decode()
+              m = re.search(r'https?://[^"\'\s>]+output\.zip', html)
+              if not m: raise SystemExit('no output.zip link found')
+              return m.group(0)
+
+          def features(raw):
+              try:
+                  d = json.loads(raw)
+                  return d.get('features', []) if isinstance(d, dict) else []
+              except ValueError:
+                  out = []
+                  for line in raw.splitlines():
+                      line = line.strip().rstrip(b',')
+                      if line.startswith(b'{'):
+                          try: out.append(json.loads(line))
+                          except ValueError: pass
+                  return out
+
+          def main(zip_path):
+              db = {a: set() for a in ALIASES}
+              with zipfile.ZipFile(zip_path) as z:
+                  for info in z.infolist():
+                      if info.is_dir(): continue
+                      raw = z.read(info)
+                      low = raw.lower()
+                      if not any(n in low for n in NEEDLES): continue
+                      for f in features(raw):
+                          g, p = f.get('geometry') or {}, f.get('properties') or {}
+                          if g.get('type') != 'Point': continue
+                          try: lng, lat = float(g['coordinates'][0]), float(g['coordinates'][1])
+                          except (KeyError, IndexError, TypeError, ValueError): continue
+                          if not inside(lat, lng): continue
+                          hits = match(p.get('brand')) or match(p.get('name'))
+                          for a in hits:
+                              db[a].add((round(lat * 1e4), round(lng * 1e4)))   # ~11 m grid removes duplicates
+              out = {}
+              for a, pts in sorted(db.items()):
+                  if not pts: continue
+                  flat = []
+                  for la, lo in sorted(pts): flat += [la * 10, lo * 10]
+                  out[a] = flat
+                  print(f'{a}: {len(pts)}')
+              json.dump(out, open(OUT, 'w', encoding='utf-8'), separators=(',', ':'), ensure_ascii=False)
+              print('total', sum(len(v) // 2 for v in out.values()), 'stores in', len(out), 'brands')
+
+          if __name__ == '__main__':
+              if len(sys.argv) > 3: main(sys.argv[3])
+              else: print(latest_zip())
           TAPPASS_EOF
           cat > stores.js <<'TAPPASS_EOF'
           // [name, brand color, initial, optional letter color, loyalty programme] - original tiles, not official logos
@@ -1252,7 +1381,8 @@ jobs:
           // which saved cards work in a store with this map label ("Tesco Express" -> Tesco card, "Argos" -> Nectar card)
           export const cardsForLabel = (label, cards) => {
             const f = fold(label);
-            return f ? cards.filter(c => geoNames(c.name).some(a => f.startsWith(fold(a)))) : [];
+            const hit = a => { a = fold(a); return f === a || f.startsWith(a + ' ') || f.startsWith(a + '-'); };   // "BP" must not match "bpost"
+            return f ? cards.filter(c => geoNames(c.name).some(hit)) : [];
           };
           TAPPASS_EOF
           cat > app.json <<'TAPPASS_EOF'
@@ -1362,6 +1492,39 @@ jobs:
           render(1,True).convert('RGB').save('assets/icon.png')
           render(.8,False).save('assets/adaptive-icon.png')
           TAPPASS_EOF
+
+      - name: Restore store database cache
+        uses: actions/cache/restore@v4
+        with:
+          path: storedb-cache.json
+          key: storedb-${{ github.run_id }}
+          restore-keys: storedb-
+
+      - name: Build store database (All the Places, official store locators)
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          cp stores.js /tmp/stores.mjs
+          node --input-type=module -e "import('/tmp/stores.mjs').then(m=>{const a=new Set(m.STORES.map(s=>s.n));Object.values(m.GEO_ALIAS).flat().forEach(x=>a.add(x));console.log(JSON.stringify([...a]))})" > /tmp/aliases.json
+          URL=$(python3 build_storedb.py /tmp/aliases.json /tmp/unused.json)
+          echo "Downloading $URL"
+          curl -fL --retry 3 -A "TapPass-build/1.0 (support@tappass.app)" -o /tmp/atp.zip "$URL"
+          python3 build_storedb.py /tmp/aliases.json /tmp/storedb.json /tmp/atp.zip
+          rm -f /tmp/atp.zip
+          cp /tmp/storedb.json storedb-cache.json
+
+      - name: Use store database
+        run: |
+          mkdir -p assets
+          if [ -s storedb-cache.json ]; then cp storedb-cache.json assets/storedb.json; else echo '{}' > assets/storedb.json; fi
+          ls -la assets/storedb.json
+
+      - name: Save store database cache
+        if: hashFiles('storedb-cache.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: storedb-cache.json
+          key: storedb-${{ github.run_id }}
 
       - name: Install dependencies
         run: |
