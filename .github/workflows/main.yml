@@ -53,6 +53,8 @@ jobs:
           import * as Battery from 'expo-battery';
           import * as Location from 'expo-location';
           import * as ImagePicker from 'expo-image-picker';
+          import * as ImageManipulator from 'expo-image-manipulator';
+          import { decodeJpegBase64 } from './imgscan';
           import { CameraView, useCameraPermissions } from 'expo-camera';
           import { LinearGradient } from 'expo-linear-gradient';
           import Svg, { Rect, Path, Circle, Defs, LinearGradient as SvgGradient, RadialGradient, Stop, G, SvgXml } from 'react-native-svg';
@@ -354,7 +356,10 @@ jobs:
               try { r.bg = (await Location.getBackgroundPermissionsAsync()).granted; } catch (e) {}
               try { const f = await Location.getForegroundPermissionsAsync(); r.precise = f.android ? f.android.accuracy !== 'coarse' : f.ios ? f.ios.accuracy !== 'reduced' : true; } catch (e) {}
               try { r.notif = (await Notifications.getPermissionsAsync()).granted; } catch (e) {}
-              if (Platform.OS === 'android') { try { r.battery = !(await Battery.isBatteryOptimizationEnabledAsync()); } catch (e) {} }
+              if (Platform.OS === 'android') {
+                try { r.battery = !(await Battery.isBatteryOptimizationEnabledAsync()); } catch (e) {}
+                if (!r.battery && (await AsyncStorage.getItem('batteryConfirmed')) === '1') r.battery = true;   // some phones (e.g. Motorola) report this wrongly
+              }
               setHealth(r);
               return r;
             };
@@ -738,7 +743,7 @@ jobs:
                 ['bg', 'pin', 'Location: “Allow all the time”', 'Needed so TapPass can notice a store while the app is closed.', 'Open settings', () => Linking.openSettings()],
                 ['precise', 'target', 'Precise location', 'Approximate location can be off by 1–3 km, which is too far to spot a store.', 'Open settings', () => Linking.openSettings()],
                 ['notif', 'bell', 'Notifications allowed', 'Without them the alert cannot appear.', 'Open settings', () => Linking.openSettings()],
-                ...(Platform.OS === 'android' ? [['battery', 'battery', 'Battery: “Unrestricted”', 'Many phones put apps to sleep to save battery, and then alerts stop. Find TapPass on the list and choose “Don’t optimise” / “Unrestricted”.', 'Fix battery setting', openBattery]] : []),
+                ...(Platform.OS === 'android' ? [['battery', 'battery', 'Battery: “Don’t optimise”', 'Your phone may pause TapPass to save battery, and then alerts stop. Tap the button, switch the list to “All apps”, find TapPass and choose “Don’t optimise”. (“Allow background usage” alone is not enough on some phones.)', 'Open battery optimisation', openBattery]] : []),
               ];
               return <Sheet onClose={() => setSheet(null)}>
                 <H2>Make alerts reliable</H2>
@@ -753,6 +758,7 @@ jobs:
                     {!ok && <>
                       <Text style={{ color: t.sub, fontSize: 13, lineHeight: 18, marginTop: 8 }}>{text}</Text>
                       <Pressable onPress={fn} style={{ marginTop: 10, alignSelf: 'flex-start', backgroundColor: t.accent, borderRadius: 99, paddingVertical: 9, paddingHorizontal: 16 }}><B style={{ color: t.on, fontSize: 14 }}>{btn}</B></Pressable>
+                      {k === 'battery' && <Pressable onPress={async () => { await AsyncStorage.setItem('batteryConfirmed', '1'); checkHealth(); }} style={{ marginTop: 6, alignSelf: 'flex-start', paddingVertical: 8 }}><B style={{ color: t.accent, fontSize: 13 }}>I’ve already done this</B></Pressable>}
                     </>}
                   </View>); })}
                 {healthIssues.length === 0 && <Text style={{ color: t.green, fontWeight: '700', textAlign: 'center', marginVertical: 8, fontSize: 15 }}>All set. Alerts will reach you even with the app closed.</Text>}
@@ -938,10 +944,22 @@ jobs:
             const gotScan = useRef(false);   // the camera reports the same code many times per second: take the first one
             const openScanner = async () => { if (!perm?.granted && !(await askCam()).granted) return; gotScan.current = false; setScanning(true); };
             const importImage = async () => {
-              const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] });
+              const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
               if (res.canceled) return;
+              const uri = res.assets[0].uri;
               say('Reading code…');
-              try { apply((await CameraView.scanFromURLAsync(res.assets[0].uri, SCAN_TYPES))[0]); } catch (e) { apply(null); }
+              let r = null;
+              try { r = (await CameraView.scanFromURLAsync(uri, SCAN_TYPES))[0] || null; } catch (e) {}
+              // the system scanner often finds nothing in gallery photos: read the picture ourselves at a few sizes
+              if (!r) for (const w of [1200, 1800, 800]) {
+                try {
+                  const m = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: w } }], { base64: true, compress: 0.92, format: ImageManipulator.SaveFormat.JPEG });
+                  await new Promise(ok => setTimeout(ok, 30));      // let the "Reading code…" toast draw first
+                  r = decodeJpegBase64(m.base64);
+                  if (r) break;
+                } catch (e) {}
+              }
+              apply(r);
             };
             const ok = name.trim() && num.length >= 4;
             const inp = { width: '100%', fontSize: 16, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 16, borderWidth: 1.5, borderColor: t.line, backgroundColor: t.card, color: t.text, marginTop: 6, marginBottom: 12 };
@@ -1521,6 +1539,109 @@ jobs:
           // app icon (design C: glass cards)
           export const LOGO = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><defs><linearGradient id=\"tpi1\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#b3a6ff\"/><stop offset=\"1\" stop-color=\"#5a3df0\"/></linearGradient><linearGradient id=\"tpi2\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#ffffff\"/><stop offset=\"1\" stop-color=\"#e9e5ff\" stop-opacity=\".93\"/></linearGradient><linearGradient id=\"tpi3\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#1f1d2b\"/><stop offset=\"1\" stop-color=\"#121214\"/></linearGradient></defs><rect width=\"1024\" height=\"1024\" rx=\"230\" fill=\"url(#tpi3)\"/><g transform=\"rotate(-12 512 512)\"><rect x=\"250\" y=\"250\" width=\"470\" height=\"300\" rx=\"62\" fill=\"url(#tpi1)\"/></g><g transform=\"rotate(6 512 512)\"><rect x=\"300\" y=\"440\" width=\"470\" height=\"300\" rx=\"62\" fill=\"url(#tpi2)\"/><rect x=\"352\" y=\"496\" width=\"120\" height=\"30\" rx=\"15\" fill=\"#5a3df0\"/><rect x=\"352\" y=\"652\" width=\"200\" height=\"30\" rx=\"15\" fill=\"#c9c0ff\"/><circle cx=\"708\" cy=\"510\" r=\"26\" fill=\"#ffd166\"/></g></svg>";
           TAPPASS_EOF
+          cat > imgscan.js <<'TAPPASS_EOF'
+          // Reads a barcode / QR code from a JPEG photo in plain JavaScript (ZXing), as a fallback for the
+          // system scanner, which often finds nothing in gallery photos on Android.
+          import * as ZX from '@zxing/library';
+          import * as JP from 'jpeg-js';
+          const Z = ZX.MultiFormatReader ? ZX : ZX.default;
+          const jpeg = JP.decode ? JP : JP.default;
+          const { MultiFormatReader, BarcodeFormat, DecodeHintType, RGBLuminanceSource, BinaryBitmap, HybridBinarizer } = Z;
+
+          const FORMATS = {
+            [BarcodeFormat.QR_CODE]: 'qr', [BarcodeFormat.EAN_13]: 'ean13', [BarcodeFormat.EAN_8]: 'ean8', [BarcodeFormat.UPC_A]: 'upc_a',
+            [BarcodeFormat.UPC_E]: 'upc_e', [BarcodeFormat.CODE_39]: 'code39', [BarcodeFormat.CODE_128]: 'code128', [BarcodeFormat.ITF]: 'itf14',
+            [BarcodeFormat.CODABAR]: 'codabar', [BarcodeFormat.PDF_417]: 'pdf417', [BarcodeFormat.AZTEC]: 'aztec', [BarcodeFormat.DATA_MATRIX]: 'datamatrix',
+          };
+
+          const ABC = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+          export function b64ToBytes(b64) {
+            const s = b64.replace(/[^A-Za-z0-9+/]/g, ''), n = Math.floor(s.length * 3 / 4), out = new Uint8Array(n);
+            let o = 0;
+            for (let i = 0; i < s.length; i += 4) {
+              const a = ABC.indexOf(s[i]), b = ABC.indexOf(s[i + 1]), c = ABC.indexOf(s[i + 2]), d = ABC.indexOf(s[i + 3]);
+              const v = (a << 18) | (b << 12) | ((c < 0 ? 0 : c) << 6) | (d < 0 ? 0 : d);
+              if (o < n) out[o++] = (v >> 16) & 255;
+              if (o < n && c >= 0) out[o++] = (v >> 8) & 255;
+              if (o < n && d >= 0) out[o++] = v & 255;
+            }
+            return out.subarray(0, o);
+          }
+
+          function luminance(data, w, h) {
+            const out = new Uint8ClampedArray(w * h);
+            for (let i = 0, j = 0; i < out.length; i++, j += 4) out[i] = (data[j] * 306 + data[j + 1] * 601 + data[j + 2] * 117) >> 10;
+            return out;
+          }
+          function rotate90(l, w, h) {          // returns an h x w image
+            const o = new Uint8ClampedArray(w * h);
+            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o[x * h + (h - 1 - y)] = l[y * w + x];
+            return o;
+          }
+
+          // returns { data, type } like the camera scanner, or null
+          export function decodeJpegBase64(b64) {
+            const img = jpeg.decode(b64ToBytes(b64), { useTArray: true, formatAsRGBA: true, maxMemoryUsageInMB: 256 });
+            const reader = new MultiFormatReader();
+            const hints = new Map();
+            hints.set(DecodeHintType.TRY_HARDER, true);
+            hints.set(DecodeHintType.POSSIBLE_FORMATS, Object.keys(FORMATS).map(Number));
+            reader.setHints(hints);
+            let l = luminance(img.data, img.width, img.height), w = img.width, h = img.height;
+            for (let r = 0; r < 2; r++) {        // as taken, then turned 90 degrees (photos of cards are often sideways)
+              try {
+                const res = reader.decodeWithState(new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(l, w, h))));
+                return { data: res.getText(), type: FORMATS[res.getBarcodeFormat()] || 'code128' };
+              } catch (e) {}
+              l = rotate90(l, w, h); [w, h] = [h, w];
+            }
+            return null;
+          }
+          TAPPASS_EOF
+          cat > decode-test.mjs <<'TAPPASS_EOF'
+          // CI self-test: draws an EAN-13 card photo (with noise, upright and sideways), saves it as JPEG
+          // and checks that the photo reader in imgscan.js gets the number back.
+          import * as JP from 'jpeg-js';
+          import { decodeJpegBase64 } from './imgscan.test.mjs';
+          const jpeg = JP.encode ? JP : JP.default;
+
+          const L = ['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'];
+          const G = ['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'];
+          const R = ['1110010','1100110','1101100','1000010','1011100','1001110','1010000','1000100','1001000','1110100'];
+          const P = ['LLLLLL','LLGLGG','LLGGLG','LLGGGL','LGLLGG','LGGLLG','LGGGLL','LGLGLG','LGLGGL','LGGLGL'];
+          function ean(code) {
+            const d = code.split('').map(Number); let b = '101';
+            for (let i = 1; i <= 6; i++) b += (P[d[0]][i - 1] === 'L' ? L : G)[d[i]];
+            b += '01010'; for (let i = 7; i <= 12; i++) b += R[d[i]];
+            return b + '101';
+          }
+          function photo(code, sideways) {
+            const bits = ean(code), mod = 6, W = 1100, H = 700, x0 = 120, y0 = 200, bh = 260;
+            let w = W, h = H; const data = Buffer.alloc(W * H * 4);
+            let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+            for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+              const i = (y * W + x) * 4, bx = Math.floor((x - x0) / mod);
+              const bar = y >= y0 && y < y0 + bh && bx >= 0 && bx < bits.length && bits[bx] === '1';
+              const v = Math.max(0, Math.min(255, (bar ? 35 : 228) + (rnd() - 0.5) * 50));   // grey card, sensor noise
+              data[i] = v; data[i + 1] = v * 0.97; data[i + 2] = v * 0.92; data[i + 3] = 255;
+            }
+            if (!sideways) return { data, width: w, height: h };
+            const out = Buffer.alloc(W * H * 4);
+            for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) data.copy(out, (x * H + (H - 1 - y)) * 4, (y * W + x) * 4, (y * W + x) * 4 + 4);
+            return { data: out, width: H, height: W };
+          }
+          let ok = true;
+          for (const sideways of [false, true]) {
+            const code = '5901234123457';
+            const b64 = Buffer.from(jpeg.encode(photo(code, sideways), 85).data).toString('base64');
+            const r = decodeJpegBase64(b64);
+            const pass = r && r.data === code && r.type === 'ean13';
+            console.log(sideways ? 'sideways' : 'upright', '->', r, pass ? 'OK' : 'FAIL');
+            ok = ok && pass;
+          }
+          if (!ok) { console.log('::error title=Photo barcode reader::self-test failed'); process.exit(1); }
+          console.log('::notice title=Photo barcode reader::self-test passed (upright + sideways EAN-13)');
+          TAPPASS_EOF
           cat > stores.js <<'TAPPASS_EOF'
           // [name, brand color, initial, optional letter color, loyalty programme] - original tiles, not official logos
           export const STORES = [
@@ -1693,8 +1814,14 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
-          npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/plus-jakarta-sans
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
+          npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/plus-jakarta-sans @zxing/library jpeg-js
+
+      - name: Self-test photo barcode reader
+        run: |
+          cp imgscan.js imgscan.test.mjs
+          node decode-test.mjs
+          rm -f imgscan.test.mjs decode-test.mjs
 
       - name: Create .env (EXPO_PUBLIC_* trafia do aplikacji = publiczne)
         run: |
