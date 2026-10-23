@@ -6,7 +6,7 @@ on:
   workflow_dispatch:          # przycisk "Run workflow"
   push:                       # zapis tego pliku (commit) od razu buduje nowy APK
     branches: [main]
-    paths: ['.github/workflows/**']
+    paths: ['.github/workflows/**', 'brand/**']
 
 permissions:
   contents: write             # żeby wrzucić APK do zakładki Releases
@@ -57,7 +57,7 @@ jobs:
           import { LinearGradient } from 'expo-linear-gradient';
           import Svg, { Rect, Path, Circle, Defs, LinearGradient as SvgGradient, RadialGradient, Stop, G, SvgXml } from 'react-native-svg';
           import { Animated, Easing, useWindowDimensions } from 'react-native';
-          import { ART, IC } from './art';
+          import { ART, IC, LOGO } from './art';
           import QRCode from 'react-native-qrcode-svg';
           import JsBarcode from 'jsbarcode';
           import { STORES, catOf, fold, cardsForLabel } from './stores';
@@ -103,19 +103,8 @@ jobs:
           function TextInput({ style, ...p }) { return <RNTextInput {...p} style={[style, { fontFamily: FONT[400] }]} />; }
 
           // ---------- artwork ----------
-          const LOGO_ARCS = [['M640.1 386.6A45 45 0 0 1 640.1 453.4', 1], ['M673.6 349.4A95 95 0 0 1 673.6 490.6', 0.7], ['M707.0 312.2A145 145 0 0 1 707.0 527.8', 0.45]];
-          const LOGO_BARS = [[212, 14], [236, 8], [254, 22], [286, 10], [306, 16], [332, 8], [350, 24], [384, 12], [406, 8], [424, 20], [454, 10], [474, 16], [500, 8], [518, 22], [550, 12], [572, 10]];
           function Logo({ size = 76 }) {
-            return (
-              <Svg width={size} height={size} viewBox="0 0 1024 1024">
-                <Defs><SvgGradient id="lg" x1="0" y1="0" x2="1" y2="1"><Stop offset="0" stopColor="#2f95ff" /><Stop offset="1" stopColor="#5a3df0" /></SvgGradient></Defs>
-                <Rect width={1024} height={1024} rx={230} fill="url(#lg)" />
-                <Rect x={162} y={292} width={700} height={440} rx={64} fill="#fff" />
-                <Rect x={212} y={342} width={150} height={28} rx={14} fill="#2f7bff" />
-                <G fill="none" stroke="#2f7bff" strokeLinecap="round" strokeWidth={30}>{LOGO_ARCS.map(([d, o]) => <Path key={d} d={d} opacity={o} />)}</G>
-                {LOGO_BARS.map(([x, w]) => <Rect key={x} x={x} y={566} width={w} height={92} rx={2} fill="#22307a" />)}
-              </Svg>
-            );
+            return <SvgXml xml={LOGO} width={size} height={size} />;
           }
           // soft orange/lilac glow used in the stat tiles
           function Orb({ size, style }) {
@@ -671,7 +660,7 @@ jobs:
             const devPro = DEV_TOOLS && dev && <View style={{ marginTop: 12 }}><Group><Row title="Dev Mode: Toggle Pro Status" sub={pro ? 'Pro is ON' : 'Pro is OFF'} onPress={toggleDevPro} right={<Sw on={pro} />} last /></Group></View>;
 
             const paywall = () => <Sheet onClose={() => setSheet(null)}>
-              <Hero top={<View style={{ boxShadow: '0px 10px 20px rgba(0,0,0,0.31)', borderRadius: 17 }}><Logo size={76} /></View>} title="Try 14 Days Free" text="Never search for your loyalty card at the checkout again." />
+              <Hero top={<View style={{ boxShadow: '0px 10px 20px rgba(0,0,0,0.38)', borderRadius: 19 }}><Logo size={84} /></View>} title="Try 14 Days Free" text="Never search for your loyalty card at the checkout again." />
               <View style={{ marginVertical: 18, marginHorizontal: 4 }}>
                 {[['Unlimited cards'], ['GPS Geo-alerts at your favorite stores', true], ['Cancel anytime']].map(([l, q]) => (
                   <View key={l} style={{ flexDirection: 'row', gap: 12, alignItems: 'center', paddingVertical: 7 }}><Check /><Text style={{ color: t.text, fontWeight: '600', fontSize: 16, flexShrink: 1 }}>{l}</Text>{q && <QM />}</View>))}
@@ -1525,6 +1514,9 @@ jobs:
            plus:'<path d="M12 5v14M5 12h14"/>',
            sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
           };
+
+          // app icon (design C: glass cards)
+          export const LOGO = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><defs><linearGradient id=\"tpi1\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#b3a6ff\"/><stop offset=\"1\" stop-color=\"#5a3df0\"/></linearGradient><linearGradient id=\"tpi2\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#ffffff\"/><stop offset=\"1\" stop-color=\"#e9e5ff\" stop-opacity=\".93\"/></linearGradient><linearGradient id=\"tpi3\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#1f1d2b\"/><stop offset=\"1\" stop-color=\"#121214\"/></linearGradient></defs><rect width=\"1024\" height=\"1024\" rx=\"230\" fill=\"url(#tpi3)\"/><g transform=\"rotate(-12 512 512)\"><rect x=\"250\" y=\"250\" width=\"470\" height=\"300\" rx=\"62\" fill=\"url(#tpi1)\"/></g><g transform=\"rotate(6 512 512)\"><rect x=\"300\" y=\"440\" width=\"470\" height=\"300\" rx=\"62\" fill=\"url(#tpi2)\"/><rect x=\"352\" y=\"496\" width=\"120\" height=\"30\" rx=\"15\" fill=\"#5a3df0\"/><rect x=\"352\" y=\"652\" width=\"200\" height=\"30\" rx=\"15\" fill=\"#c9c0ff\"/><circle cx=\"708\" cy=\"510\" r=\"26\" fill=\"#ffd166\"/></g></svg>";
           TAPPASS_EOF
           cat > stores.js <<'TAPPASS_EOF'
           // [name, brand color, initial, optional letter color, loyalty programme] - original tiles, not official logos
@@ -1618,7 +1610,7 @@ jobs:
                 ],
                 "adaptiveIcon": {
                   "foregroundImage": "./assets/adaptive-icon.png",
-                  "backgroundColor": "#3F6CF3"
+                  "backgroundColor": "#19181F"
                 }
               },
               "plugins": [
@@ -1646,51 +1638,18 @@ jobs:
               ],
               "icon": "./assets/icon.png",
               "splash": {
-                "image": "./assets/adaptive-icon.png",
+                "image": "./assets/splash-icon.png",
                 "resizeMode": "contain",
-                "backgroundColor": "#3F6CF3"
+                "backgroundColor": "#121214"
               }
             }
           }
           TAPPASS_EOF
 
-      - name: Generate icons
+      - name: App icon and splash (design C, files in brand/)
         run: |
-          pip install --quiet pillow numpy
-          python3 - <<'TAPPASS_EOF'
-          from PIL import Image, ImageDraw
-          import numpy as np, math, os
-          S=2; N=1024*S
-          CX,CY=610,420; RADII=[(45,1.0),(95,.7),(145,.45)]; SW=30; A=48
-          bars=[]; x=212
-          for w in [14,8,22,10,16,8,24,12,8,20,10,16,8,22,12,10,18,8,14,10]:
-              if x+w>600: break
-              bars.append((x,w)); x+=w+10
-          pt=lambda r,a:(CX+r*math.cos(math.radians(a)),CY+r*math.sin(math.radians(a)))
-          def render(k,bg):
-              P=lambda x,y:((512+(x-512)*k)*S,(512+(y-512)*k)*S)
-              L=lambda v:v*k*S
-              if bg:
-                  t=np.linspace(0,1,N,dtype=np.float32); d=(t[None,:]+t[:,None])/2
-                  c0=np.array([0x2f,0x95,0xff],np.float32); c1=np.array([0x5a,0x3d,0xf0],np.float32)
-                  img=Image.fromarray((c0*(1-d[...,None])+c1*d[...,None]).astype(np.uint8),'RGB').convert('RGBA')
-              else: img=Image.new('RGBA',(N,N),(0,0,0,0))
-              dr=ImageDraw.Draw(img)
-              x0,y0=P(162,292); x1,y1=P(862,732); dr.rounded_rectangle([x0,y0,x1,y1],radius=L(64),fill=(255,255,255,255))
-              a,b=P(212,342); c,d_=P(362,370); dr.rounded_rectangle([a,b,c,d_],radius=L(14),fill=(0x2f,0x7b,0xff,255))
-              for r,o in RADII:
-                  lay=Image.new('RGBA',(N,N),(0,0,0,0)); ld=ImageDraw.Draw(lay); rad=L(SW)/2
-                  for i in range(0,2*A*4+1):
-                      px,py=P(*pt(r,-A+i/4)); ld.ellipse([px-rad,py-rad,px+rad,py+rad],fill=(0x2f,0x7b,0xff,int(255*o)))
-                  img=Image.alpha_composite(img,lay)
-              dr=ImageDraw.Draw(img)
-              for x,w in bars:
-                  a,b=P(x,566); c,d_=P(x+w,658); dr.rounded_rectangle([a,b,c,d_],radius=L(2),fill=(0x22,0x30,0x7a,255))
-              return img.resize((1024,1024),Image.LANCZOS)
-          os.makedirs('assets',exist_ok=True)
-          render(1,True).convert('RGB').save('assets/icon.png')
-          render(.8,False).save('assets/adaptive-icon.png')
-          TAPPASS_EOF
+          mkdir -p assets
+          cp brand/icon.png brand/adaptive-icon.png brand/splash-icon.png assets/
 
       - name: Restore store database cache
         uses: actions/cache/restore@v4
