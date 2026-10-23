@@ -898,7 +898,7 @@ jobs:
 
           export const TASK = 'TAPPASS_GEOFENCE';
           export const LOC_TASK = 'TAPPASS_LOCATION';   // Android: location updates in a foreground service (survives battery savers)
-          const CHANNEL = 'geo-alerts';
+          const CHANNEL = 'store-alerts-v2';   // new id: Android never changes the sound of an existing channel
           // Store locations: 1) the built-in database (works offline, no server needed),
           // 2) only for chains missing there: OpenStreetMap via the Overpass API (several public servers in turn).
           const ENDPOINTS = [
@@ -921,7 +921,7 @@ jobs:
           const LOCAL_RADIUS = 20000;       // m, stores taken from the built-in database around the user
 
           Notifications.setNotificationHandler({
-            handleNotification: async () => ({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false }),
+            handleNotification: async () => ({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false }),
           });
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -932,7 +932,7 @@ jobs:
           async function glog(m) {
             const l = (await load('geoLog')) || [];
             l.unshift(`${new Date().toLocaleTimeString()} ${m}`);
-            await save('geoLog', l.slice(0, 40));
+            await save('geoLog', l.slice(0, 80));
           }
           export const getLog = () => load('geoLog');
 
@@ -947,9 +947,10 @@ jobs:
           export async function ensureChannel() {
             if (Platform.OS !== 'android') return;
             await Notifications.setNotificationChannelAsync(CHANNEL, {
-              name: 'Store alerts', importance: Notifications.AndroidImportance.HIGH,
-              vibrationPattern: [0, 200, 100, 200], lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+              name: 'Store alerts', importance: Notifications.AndroidImportance.MAX, sound: 'default', enableVibrate: true,
+              vibrationPattern: [0, 250, 120, 250], lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC, bypassDnd: false,
             });
+            await Notifications.deleteNotificationChannelAsync('geo-alerts').catch(() => {});   // old silent channel
           }
 
           // One notification for one or several cards (e.g. a mall). Tapping opens the card or a picker.
@@ -964,6 +965,7 @@ jobs:
                 title: one ? `📍 You are near ${matched[0].name}!` : `📍 ${matched.length} of your stores are nearby`,
                 body: one ? 'Tap to open your card.' : 'Tap to choose your card.',
                 data: { cardIds: matched.map(c => c.id) },
+                sound: 'default', priority: Notifications.AndroidNotificationPriority.MAX,
               },
               trigger: Platform.OS === 'android' ? { channelId: CHANNEL } : null,
             });
@@ -1022,8 +1024,10 @@ jobs:
           //    saved stores here, so alerts work offline and do not depend on the geofencing API.
           //    It also retries a failed store lookup as soon as the phone is back online.
           TaskManager.defineTask(LOC_TASK, async ({ data, error }) => {
-            if (error || !data?.locations?.length) return;
-            const { latitude: lat, longitude: lng } = data.locations[data.locations.length - 1].coords;
+            if (error) { await glog('loc error ' + (error.message || error)); return; }
+            if (!data?.locations?.length) return;
+            const { latitude: lat, longitude: lng, accuracy } = data.locations[data.locations.length - 1].coords;
+            const acc = Math.min(Math.round(accuracy || 0), 100);
             const cache = await load('geo:near');           // stores around the last refresh point
             const retry = await load('geoRetry');
             const due = retry ? Date.now() >= retry.at : !cache;
@@ -1035,9 +1039,9 @@ jobs:
             for (const s of cache.stores) {
               const d = dist(lat, lng, s.lat, s.lng);
               if (!best || d < best.d) best = { name: s.name, d };
-              if (d <= RADIUS + 30) near.add(s.name);
+              if (d <= RADIUS + acc) near.add(s.name);          // GPS error counts in the user's favour
             }
-            if (best) await glog(`loc ${lat.toFixed(4)},${lng.toFixed(4)} nearest ${best.name} ${Math.round(best.d)} m`);
+            await glog(`loc ±${acc} m${best ? `, nearest ${best.name} ${Math.round(best.d)} m` : ''}`);
             for (const n of near) await alertCard(n);
           });
 
@@ -1173,11 +1177,18 @@ jobs:
           const setStatus = s => save('geoStatus', { t: Date.now(), ...s });
           export const getStatus = () => load('geoStatus');
 
+          const LOC_VERSION = '2';   // bump when the watcher settings change so old watchers are restarted
           async function startLoc() {
             if (Platform.OS !== 'android') return;
-            if (await Location.hasStartedLocationUpdatesAsync(LOC_TASK)) return;
+            if (await Location.hasStartedLocationUpdatesAsync(LOC_TASK)) {
+              if ((await AsyncStorage.getItem('locVersion')) === LOC_VERSION) return;
+              await Location.stopLocationUpdatesAsync(LOC_TASK);
+            }
+            await AsyncStorage.setItem('locVersion', LOC_VERSION);
             await Location.startLocationUpdatesAsync(LOC_TASK, {
-              accuracy: Location.Accuracy.Balanced, distanceInterval: 80, timeInterval: 30000,
+              // real GPS every ~10 s / 25 m: "balanced" (Wi-Fi/cell) mode gave almost no updates with the screen off
+              accuracy: Location.Accuracy.High, distanceInterval: 25, timeInterval: 10000, deferredUpdatesInterval: 0,
+              pausesUpdatesAutomatically: false,
               foregroundService: { notificationTitle: 'TapPass is watching for nearby stores', notificationBody: 'So your card is ready when you arrive.', notificationColor: '#5a3df0' },
             });
           }
