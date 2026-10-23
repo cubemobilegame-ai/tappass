@@ -91,6 +91,8 @@ jobs:
             let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
             return { n: name, c: toHex(`hsl(${h},55%,42%)`), l: (name.trim()[0] || '?').toUpperCase(), t: '#fff' };
           };
+          // scanned codes keep their full content (QR codes can hold long links); typed numbers are tidied up
+          const cleanScan = v => { v = String(v || '').trim(); return (/^[\d\s-]+$/.test(v) ? v.replace(/[\s-]/g, '') : v).slice(0, 2000); };
           const cleanCode = v => { v = v.replace(/[^\x20-\x7E]/g, '').trim(); return (/^[\d\s-]+$/.test(v) ? v.replace(/[\s-]/g, '') : v).slice(0, 120); };
           const fmtNum = n => n.replace(/(.{4})/g, '$1 ').trim();
 
@@ -930,10 +932,11 @@ jobs:
 
             const apply = r => {
               if (!r) return say('No code found. Try a sharper, closer photo.');
-              const qr = r.type === 'qr' || r.type === 256; setNum(cleanCode(r.data)); setType(qr ? 'qr' : 'barcode'); setFmt(qr ? null : FMT[r.type] || null);
+              const qr = r.type === 'qr' || r.type === 256; setNum(cleanScan(r.data)); setType(qr ? 'qr' : 'barcode'); setFmt(qr ? null : FMT[r.type] || null);
               say('Code detected ✓');
             };
-            const openScanner = async () => { if (!perm?.granted && !(await askCam()).granted) return; setScanning(true); };
+            const gotScan = useRef(false);   // the camera reports the same code many times per second: take the first one
+            const openScanner = async () => { if (!perm?.granted && !(await askCam()).granted) return; gotScan.current = false; setScanning(true); };
             const importImage = async () => {
               const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] });
               if (res.canceled) return;
@@ -947,7 +950,7 @@ jobs:
             if (scanning) return (
               <Modal visible animationType="slide" statusBarTranslucent onRequestClose={() => setScanning(false)}>
                 <View style={{ flex: 1, backgroundColor: '#000' }}>
-                  <CameraView style={{ flex: 1 }} barcodeScannerSettings={{ barcodeTypes: SCAN_TYPES }} onBarcodeScanned={r => { setScanning(false); apply(r); }} />
+                  <CameraView style={{ flex: 1 }} barcodeScannerSettings={{ barcodeTypes: SCAN_TYPES }} onBarcodeScanned={r => { if (gotScan.current) return; gotScan.current = true; setScanning(false); apply(r); }} />
                   <Text onPress={() => setScanning(false)} style={{ position: 'absolute', top: 60, right: 20, color: '#fff', fontSize: 17, fontWeight: '700' }}>Cancel</Text>
                   <Text style={{ position: 'absolute', bottom: 60, width: '100%', textAlign: 'center', color: '#fff', fontSize: 15 }}>Point the camera at the card’s code</Text>
                 </View>
