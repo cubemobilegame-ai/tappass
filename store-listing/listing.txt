@@ -1,0 +1,68 @@
+TAPPASS – GOOGLE PLAY STORE LISTING (English, for US + UK)
+=========================================================
+
+APP NAME (max 30)
+TapPass: Loyalty Card Wallet
+
+SHORT DESCRIPTION (max 80)
+All your loyalty cards in one place. Your card pops up when you reach the store.
+
+FULL DESCRIPTION (max 4000)
+Stop digging through your wallet at the checkout. TapPass keeps every loyalty card on your phone and shows the right one the moment you need it.
+
+★ YOUR CARD FINDS YOU
+Walk up to a store and TapPass sends a notification. One tap and your card is on screen, ready to scan. No searching, no holding up the queue. It works even when your phone is locked and the app is closed, and even inside a shop with no signal.
+
+★ EVERY CARD IN ONE BEAUTIFUL WALLET
+Supermarkets, pharmacies, coffee shops, beauty, pet stores, fuel stations – keep them all together. Cards are sorted by category and shown in the store’s colours, so you find the right one at a glance.
+
+★ ADD A CARD IN SECONDS
+Scan the barcode or QR code with your camera, import a photo of your card, or simply type the number. TapPass recognises all common formats, including EAN-13, UPC, Code 128 and QR codes, and shows your card in exactly the same format at the till.
+
+★ SCAN AT THE TILL IN A SECOND
+Your code opens full screen with the brightness turned up, so scanners read it first time.
+
+★ SHOPPING LIST, BUILT IN
+Jot down what you need and tick things off as you shop – right next to your cards.
+
+★ KNOW WHICH CARDS YOU REALLY USE
+See your week at a glance, your most used card and a full history of cards shown and store alerts.
+
+★ PRIVATE BY DESIGN
+Your cards and shopping list stay on your phone. TapPass never sees what you buy or how much you spend. Location is only used to spot nearby stores of the cards you saved, and you can switch alerts off at any time.
+
+★ MADE FOR EVERY DAY
+• Light and dark mode
+• No account needed
+• One alert per store every few hours – no spam
+• At a mall with several of your stores? You get one notification and choose the card
+
+TAPPASS PRO
+Get unlimited cards and automatic store alerts. Try Pro free for 14 days, then choose monthly or yearly. Cancel anytime in Google Play. The free version lets you keep up to 3 cards.
+
+Store locations: © OpenStreetMap contributors and All the Places (CC0).
+TapPass is an independent app and is not affiliated with or endorsed by any retailer. Store names and trademarks belong to their owners.
+
+Questions or ideas? Write to support@tappass.app
+
+
+WHAT'S NEW (first release, max 500)
+Welcome to TapPass! Keep all your loyalty cards in one place and get your card automatically when you arrive at a store.
+
+
+STORE SETTINGS (Play Console)
+• App category: Shopping
+• Tags (pick up to 5): Shopping, Wallet, Coupons & deals, Productivity, Tools
+• Contact e-mail: support@tappass.app   (or your real support address)
+• Privacy policy URL: [your published policy URL]
+• Contains ads: No
+• In-app purchases: Yes (TapPass Pro subscription)
+• Target audience: 18+ (simplest for location + subscriptions)
+
+GRAPHICS IN THIS PACKAGE
+• icon-512.png ............ App icon, 512 x 512 PNG (Play adds the rounded mask itself)
+• feature-graphic.png ..... Feature graphic, 1024 x 500
+• 01 ... 07 .png .......... Phone screenshots, 1080 x 1920 (9:16), in this order:
+   01 wallet · 02 store alert · 03 scan at the till · 04 add a card · 05 shopping list · 06 activity · 07 privacy / dark mode
+Screenshots use fictional demo stores (FreshMart, Bean & Brew, CityPharm …) on purpose:
+Google rejects listings that show other companies’ brands or logos without permission.
