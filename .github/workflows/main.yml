@@ -908,13 +908,13 @@ jobs:
           ].filter(Boolean);
           // Since April 2026 Overpass rejects anonymous / generic clients with HTTP 406, so every request says who we are.
           const UA = 'TapPass/1.0 (loyalty card app; support@tappass.app)';
-          const SEARCH_RADIUS = 10000;      // m, area searched around the user
-          const CACHE_RANGE = 5000;         // m, reuse cached stores while the user stays within this distance
+          const SEARCH_RADIUS = 6000;       // m, area searched around the user (20 km if nothing is found)
+          const CACHE_RANGE = 3000;         // m, reuse cached stores while the user stays within this distance
           const CACHE_TTL = 7 * 864e5;      // 7 days
           const RADIUS = 150;               // m, store geofence
           const MAX_REGIONS = 18;           // iOS allows 20 regions per app; 1 is used by the refresh zone
           const REFRESH_ID = 'refresh::zone';
-          const REFRESH_RADIUS = 3000;      // leaving this zone rebuilds the geofences around the new position
+          const REFRESH_RADIUS = 2500;      // leaving this zone rebuilds the geofences around the new position
           const COOLDOWN = 4 * 3600e3;      // one alert per store per 4 h
           const BACKOFF = [30e3, 120e3, 300e3, 600e3, 900e3];   // retry after a failed lookup
 
@@ -1055,7 +1055,7 @@ jobs:
 
           async function post(url, q) {
             const ac = new AbortController();
-            const timer = setTimeout(() => ac.abort(), 30000);
+            const timer = setTimeout(() => ac.abort(), 60000);
             try {
               const res = await fetch(url, {
                 method: 'POST', signal: ac.signal,
@@ -1067,38 +1067,54 @@ jobs:
             } finally { clearTimeout(timer); }
           }
 
+          // Exact brand/name values inside a bounding box: the fastest kind of Overpass query
+          // (regex searches over a wide circle were timing out on the busy public servers).
+          const variants = n => [...new Set([n, n.replace(/’/g, "'"), n.replace(/'/g, '’'), n.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ł/g, 'l').replace(/Ł/g, 'L')])];
+          const qs = v => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          function buildQuery(cards, lat, lng, r) {
+            const values = [...new Set(cards.flatMap(c => geoNames(c.name)).flatMap(variants))];
+            const dLat = r / 111320, dLng = r / (111320 * Math.cos(lat * Math.PI / 180));
+            const bbox = `(${(lat - dLat).toFixed(5)},${(lng - dLng).toFixed(5)},${(lat + dLat).toFixed(5)},${(lng + dLng).toFixed(5)})`;
+            const parts = values.flatMap(v => ['brand', 'name'].map(t => `nwr["${t}"="${qs(v)}"]${bbox};`));
+            return `[out:json][timeout:25];(${parts.join('')});out tags center qt;`;
+          }
+          function parse(elements, cards) {
+            const seen = new Set(), out = [];
+            for (const el of elements) {
+              if (!el.tags || !(el.tags.shop || el.tags.amenity)) continue;          // only real shops / cafés / fuel stations
+              const la = el.lat ?? el.center?.lat, lo = el.lon ?? el.center?.lon;
+              if (la == null) continue;
+              const label = el.tags.brand || el.tags.name || '';
+              for (const c of cardsForLabel(label, cards)) {
+                const key = `${c.name}:${la.toFixed(3)}:${lo.toFixed(3)}`;   // node + building of the same store -> one entry
+                if (seen.has(key)) continue;
+                seen.add(key); out.push({ name: c.name, lat: la, lng: lo });
+              }
+            }
+            return out;
+          }
           async function queryStores(cards, lat, lng) {
-            const aliases = [...new Set(cards.flatMap(c => geoNames(c.name)))];
-            const re = '^(' + aliases.map(rx).join('|') + ')';
-            const around = `(around:${SEARCH_RADIUS},${lat.toFixed(5)},${lng.toFixed(5)})`;
-            const parts = ['shop', 'amenity'].flatMap(k => ['brand', 'name'].map(t => `nwr["${k}"]["${t}"~"${re}",i]${around};`));
-            const q = `[out:json][timeout:25];(${parts.join('')});out center tags;`;
+            const good = await AsyncStorage.getItem('ovGood');                  // start with the server that worked last time
+            const list = good && ENDPOINTS.includes(good) ? [good, ...ENDPOINTS.filter(u => u !== good)] : ENDPOINTS;
             let lastErr = null;
-            for (const url of ENDPOINTS) {
+            for (const url of list) {
+              const host = url.split('/')[2];
               try {
-                const { elements = [] } = await post(url, q);
-                const seen = new Set(), out = [];
-                for (const el of elements) {
-                  const la = el.lat ?? el.center?.lat, lo = el.lon ?? el.center?.lon;
-                  if (la == null) continue;
-                  const label = el.tags?.brand || el.tags?.name || '';
-                  for (const c of cardsForLabel(label, cards)) {
-                    const key = `${c.name}:${la.toFixed(3)}:${lo.toFixed(3)}`;   // node + building of the same store -> one entry
-                    if (seen.has(key)) continue;
-                    seen.add(key); out.push({ name: c.name, lat: la, lng: lo });
-                  }
-                }
-                await glog(`lookup ok ${url.split('/')[2]}: ${out.length} stores`);
+                let out = parse((await post(url, buildQuery(cards, lat, lng, SEARCH_RADIUS))).elements || [], cards);
+                if (!out.length) out = parse((await post(url, buildQuery(cards, lat, lng, 20000))).elements || [], cards);
+                await AsyncStorage.setItem('ovGood', url);
+                await glog(`lookup ok ${host}: ${out.length} stores`);
                 return out;
               } catch (e) {
                 lastErr = e;
-                await glog(`lookup ${url.split('/')[2]} failed: ${String(e.message || e).slice(0, 70)}`);
+                const m = String(e.message || e);
+                await glog(`lookup ${host} failed: ${/cancel|abort/i.test(m) ? 'timeout (60 s)' : m.slice(0, 70)}`);
               }
             }
             throw lastErr || new Error('lookup failed');
           }
 
-          const offline = e => /network|resolve|host|abort|timeout|failed to connect/i.test(String(e?.message || e));
+          const offline = e => /network request failed|resolve|unknownhost|failed to connect/i.test(String(e?.message || e));
 
           async function getStores(cards, lat, lng) {
             const names = [...new Set(cards.map(c => c.name))];
