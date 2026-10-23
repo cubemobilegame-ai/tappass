@@ -55,7 +55,9 @@ jobs:
           import * as ImagePicker from 'expo-image-picker';
           import { CameraView, useCameraPermissions } from 'expo-camera';
           import { LinearGradient } from 'expo-linear-gradient';
-          import Svg, { Rect, Path, Circle, Defs, LinearGradient as SvgGradient, RadialGradient, Stop, G } from 'react-native-svg';
+          import Svg, { Rect, Path, Circle, Defs, LinearGradient as SvgGradient, RadialGradient, Stop, G, SvgXml } from 'react-native-svg';
+          import { Animated, Easing, useWindowDimensions } from 'react-native';
+          import { ART, IC } from './art';
           import QRCode from 'react-native-qrcode-svg';
           import JsBarcode from 'jsbarcode';
           import { STORES, catOf, fold, cardsForLabel } from './stores';
@@ -137,6 +139,12 @@ jobs:
             l: c => <Icon color={c} d="M10 6h10M10 12h10M10 18h10M4 6l1.2 1.2L7.5 5M4 12l1.2 1.2L7.5 11M4 18l1.2 1.2L7.5 17" />,
             s: c => <Icon color={c}><Path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><Circle cx={16} cy={7} r={2} /><Circle cx={8} cy={17} r={2} /></Icon>,
           };
+
+          // line icon from the shared set; colour applied to strokes (and the few filled details)
+          function Ic({ name, size = 19, color = '#fff', width = 2 }) {
+            const body = (IC[name] || '').replace(/#fff/g, color);
+            return <SvgXml width={size} height={size} xml={`<svg viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`} />;
+          }
 
           // ---------- small building blocks ----------
           function Sw({ on, s = 1 }) {
@@ -241,7 +249,7 @@ jobs:
             const { t } = useT();
             return (
               <Pressable onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: last ? 0 : 1, borderColor: t.line }}>
-                {ico ? <View style={{ width: 34, height: 34, borderRadius: 11, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 17 }}>{ico}</Text></View> : null}
+                {ico ? <View style={{ width: 34, height: 34, borderRadius: 11, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}>{IC[ico] ? <Ic name={ico} /> : <Text style={{ color: '#fff', fontSize: 17 }}>{ico}</Text>}</View> : null}
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}><Text style={{ color: t.text, fontSize: 16, fontWeight: '700', flexShrink: 1 }}>{title}</Text>{titleRight}</View>
                   {sub ? <Text style={{ color: t.sub, fontSize: 13, lineHeight: 18 }}>{sub}</Text> : null}
@@ -322,17 +330,18 @@ jobs:
             const [toast, setToast] = useState('');
             const [gstat, setGstat] = useState(null);
             const [item, setItem] = useState('');
+            const [onb, setOnb] = useState(false);
             const toastT = useRef(null);
             const scroll = useRef(null);
             const t = palette(theme === 'system' ? sys === 'dark' : theme === 'dark');
             const say = m => { setToast(m); clearTimeout(toastT.current); toastT.current = setTimeout(() => setToast(''), 2600); };
 
             useEffect(() => { (async () => {
-              const k = ['cards', 'pro', 'geo', 'theme', 'dev', 'reliable', 'log', 'list'];
+              const k = ['cards', 'pro', 'geo', 'theme', 'dev', 'reliable', 'log', 'list', 'onb'];
               const v = await Promise.all(k.map(x => AsyncStorage.getItem(x)));
               const j = (s, d) => { try { return s ? JSON.parse(s) : d; } catch (e) { return d; } };
               setCards(j(v[0], [])); setPro(v[1] === '1'); setGeo(v[2] === '1'); setTheme(v[3] || 'system');
-              setDev(v[4] === null ? true : v[4] === '1'); setReliable(v[5] !== '0'); setLog(j(v[6], [])); setList(j(v[7], []));
+              setDev(v[4] === null ? true : v[4] === '1'); setReliable(v[5] !== '0'); setLog(j(v[6], [])); setList(j(v[7], [])); setOnb(v[8] !== '1');
               setReady(true);
             })(); }, []);
             useEffect(() => { if (!ready) return;
@@ -442,14 +451,18 @@ jobs:
               return () => sub.remove();
             });
 
-            if (!fontsLoaded) return <View style={{ flex: 1, backgroundColor: t.bg }} />;
+            if (!fontsLoaded || !ready) return <View style={{ flex: 1, backgroundColor: t.bg }} />;
+            if (onb) {
+              const finish = () => { AsyncStorage.setItem('onb', '1'); setOnb(false); };
+              return <Ctx.Provider value={{ t, insets, showInfo: () => setSheet('info'), openFull }}><Onboarding onDone={finish} onPro={() => { finish(); setSheet('pay'); }} /></Ctx.Provider>;
+            }
 
             // ---------- shared styles ----------
             const muted = { color: t.sub, fontSize: 14, lineHeight: 19.6 };
             const card = { backgroundColor: t.card, boxShadow: t.shadow };
             const h1 = txt => <Text style={{ color: t.text, fontSize: 34, fontWeight: '800', letterSpacing: -0.8, marginTop: 10, marginBottom: 4, lineHeight: 41 }}>{txt}</Text>;
             const geoRow = (
-              <Group><Row ico="📍" bg="#007aff" title={'GPS Geo-alerts' + (pro ? '' : ' 🔒')} titleRight={<QM />} sub="Show your card automatically near a store" onPress={toggleGeo} right={<Sw on={geoOn} />} last /></Group>
+              <Group><Row ico="pin" bg="#007aff" title="GPS Geo-alerts" titleRight={<>{pro ? null : <View style={{ marginLeft: 5 }}><Ic name="lock" size={14} color={t.sub} width={2.2} /></View>}<QM /></>} sub="Show your card automatically near a store" onPress={toggleGeo} right={<Sw on={geoOn} />} last /></Group>
             );
 
             // ---------- views ----------
@@ -481,7 +494,7 @@ jobs:
                   </View>
                   <Pressable onPress={toggleGeo} style={[card, { flex: 1, borderRadius: 20, minHeight: 66, paddingVertical: 11, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4 }]}>
                     <View style={{ flex: 1, gap: 2, minWidth: 0 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center' }}><Text style={{ color: t.text, fontSize: 13, fontWeight: '700' }}>Geo-alerts{pro ? '' : ' 🔒'}</Text><QM /></View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}><Text style={{ color: t.text, fontSize: 13, fontWeight: '700' }}>Geo-alerts</Text>{pro ? null : <View style={{ marginLeft: 4 }}><Ic name="lock" size={12} color={t.sub} width={2.2} /></View>}<QM /></View>
                       <Text numberOfLines={1} style={{ color: t.sub, fontSize: 12 }}>{geoStatus}</Text>
                     </View>
                     <Sw on={geoOn} s={0.72} />
@@ -489,7 +502,7 @@ jobs:
                 </View>
                 {geo && pro && healthIssues.length > 0 && (
                   <Pressable onPress={() => setSheet('health')} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#ff9500', borderRadius: 20, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 12 }}>
-                    <Text style={{ fontSize: 22 }}>⚠️</Text>
+                    <Ic name="alert" size={24} />
                     <View style={{ flex: 1 }}>
                       <B style={{ color: '#fff', fontSize: 15 }}>Geo-alerts may not work</B>
                       <Text style={{ color: '#fff', fontSize: 13, opacity: 0.95 }}>{healthIssues.length === 1 ? '1 setting needs' : healthIssues.length + ' settings need'} your attention. Tap to fix.</Text>
@@ -510,7 +523,7 @@ jobs:
               </>;
             };
 
-            const AK = { used: ['🧾', '#34c759', 'Card shown at checkout'], alert: ['📍', '#007aff', 'Geo-alert near store'], added: ['➕', '#5a3df0', 'Card added'], removed: ['🗑', '#ff3b30', 'Card removed'] };
+            const AK = { used: ['receipt', '#34c759', 'Card shown at checkout'], alert: ['pin', '#007aff', 'Geo-alert near store'], added: ['plus', '#5a3df0', 'Card added'], removed: ['trash', '#ff3b30', 'Card removed'] };
             const dayLabel = ts => { const d = new Date(ts), n = new Date(), st = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(), diff = Math.round((st(n) - st(d)) / 864e5);
               return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }); };
             const viewActivity = () => {
@@ -559,7 +572,7 @@ jobs:
                           <B style={{ color: t.text, fontSize: 16 }}>{e.n}</B>
                           <Text style={{ fontSize: 13, color: t.sub }}>{lb} · {new Date(e.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text>
                         </View>
-                        <View style={{ width: 30, height: 30, borderRadius: 10, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 15, color: '#fff' }}>{ic}</Text></View>
+                        <View style={{ width: 30, height: 30, borderRadius: 10, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}><Ic name={ic} size={16} /></View>
                       </View>); })}
                   </View>) : <Empty>No activity yet.{'\n'}Open a card at checkout and it shows up here.</Empty>}
                 </Panel>
@@ -598,21 +611,21 @@ jobs:
               {h1('Settings')}
               <Sec>Subscription</Sec>
               <Group>
-                <Row ico="⭐" bg="#ff9f0a" title={pro ? 'TapPass Pro' : 'Upgrade to Pro'} sub={pro ? 'Active · unlimited cards' : '14 days free, then from $2.99/month'} onPress={() => setSheet('pay')} />
-                <Row ico="↻" bg="#007aff" title="Restore Purchases" onPress={restore} last={!pro} />
-                {pro && <Row ico="⚙" bg="#8e8e93" title="Manage Subscription" sub="App Store / Google Play" onPress={() => say('Opens your store subscription settings')} last />}
+                <Row ico="star" bg="#ff9f0a" title={pro ? 'TapPass Pro' : 'Upgrade to Pro'} sub={pro ? 'Active · unlimited cards' : '14 days free, then from $2.99/month'} onPress={() => setSheet('pay')} />
+                <Row ico="refresh" bg="#007aff" title="Restore Purchases" onPress={restore} last={!pro} />
+                {pro && <Row ico="gear" bg="#8e8e93" title="Manage Subscription" sub="App Store / Google Play" onPress={() => say('Opens your store subscription settings')} last />}
               </Group>
               <Sec>Preferences</Sec>
               {geoRow}
-              {geoOn && <Group><Row ico={healthIssues.length ? '⚠️' : '✅'} bg={healthIssues.length ? '#ff9500' : '#34c759'} title="Alert reliability check" sub={healthIssues.length ? healthIssues.length + ' setting(s) need attention' : 'Everything is set'} onPress={() => { checkHealth(); setSheet('health'); }} last /></Group>}
+              {geoOn && <Group><Row ico={healthIssues.length ? 'alert' : 'check'} bg={healthIssues.length ? '#ff9500' : '#34c759'} title="Alert reliability check" sub={healthIssues.length ? healthIssues.length + ' setting(s) need attention' : 'Everything is set'} onPress={() => { checkHealth(); setSheet('health'); }} last /></Group>}
               {Platform.OS === 'android' && geoOn && <Group>
-                <Row ico="🔋" bg="#ff9500" title="Reliable mode" sub="Keeps a small notification so Android doesn’t stop alerts" onPress={() => setReliable(!reliable)} right={<Sw on={reliable} />} />
-                <Row ico="⚙️" bg="#8e8e93" title="Battery & background" sub="Set TapPass battery usage to Unrestricted" onPress={() => Linking.openSettings()} last />
+                <Row ico="battery" bg="#ff9500" title="Reliable mode" sub="Keeps a small notification so Android doesn’t stop alerts" onPress={() => setReliable(!reliable)} right={<Sw on={reliable} />} />
+                <Row ico="gear" bg="#8e8e93" title="Battery & background" sub="Set TapPass battery usage to Unrestricted" onPress={() => Linking.openSettings()} last />
               </Group>}
               <Group>
                 <View style={{ paddingVertical: 14, paddingHorizontal: 16 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-                    <View style={{ width: 34, height: 34, borderRadius: 11, backgroundColor: '#5856d6', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17 }}>🌓</Text></View>
+                    <View style={{ width: 34, height: 34, borderRadius: 11, backgroundColor: '#5856d6', alignItems: 'center', justifyContent: 'center' }}><Ic name="theme" /></View>
                     <Text style={{ color: t.text, fontSize: 16, fontWeight: '700' }}>Appearance</Text>
                   </View>
                   <View style={{ flexDirection: 'row', backgroundColor: t.line, borderRadius: 14, padding: 3, marginTop: 12 }}>
@@ -625,26 +638,27 @@ jobs:
               </Group>
               <Sec>Support</Sec>
               <Group>
-                <Row ico="✉️" bg="#34c759" title="Contact Support" sub="support@tappass.app" onPress={() => Linking.openURL('mailto:support@tappass.app').catch(() => say('Opens your mail app'))} />
-                <Row ico="★" bg="#ff9f0a" title="Rate TapPass" onPress={() => say('Opens the store review page')} />
-                <Row ico="📄" bg="#8e8e93" title="Terms of Use" onPress={() => say('Opens terms of use')} last />
+                <Row ico="mail" bg="#34c759" title="Contact Support" sub="support@tappass.app" onPress={() => Linking.openURL('mailto:support@tappass.app').catch(() => say('Opens your mail app'))} />
+                <Row ico="star" bg="#ff9f0a" title="Rate TapPass" onPress={() => say('Opens the store review page')} />
+                <Row ico="doc" bg="#8e8e93" title="Terms of Use" onPress={() => say('Opens terms of use')} last />
               </Group>
               <Sec>Privacy</Sec>
-              <Group><Row ico="🔒" bg="#8e8e93" title="Privacy Policy" sub="How we use and share data" onPress={() => setSheet('pol')} last /></Group>
+              <Group><Row ico="lock" bg="#8e8e93" title="Privacy Policy" sub="How we use and share data" onPress={() => setSheet('pol')} last /></Group>
               <Sec>Data</Sec>
               <Group>
-                <Row ico="🧹" bg="#ff9500" title="Clear Activity History" sub={log.length + ' events'} onPress={() => confirm('Clear activity history?', 'All activity entries will be removed.', 'Clear', () => setLog([]))} />
-                <Row ico="🗑" bg="#ff3b30" title="Delete All Cards" sub={cards.length + ' saved on this device'} onPress={() => cards.length && confirm('Delete all cards?', 'All cards will be removed from this device.', 'Delete all', () => setCards([]))} last />
+                <Row ico="clock" bg="#ff9500" title="Clear Activity History" sub={log.length + ' events'} onPress={() => confirm('Clear activity history?', 'All activity entries will be removed.', 'Clear', () => setLog([]))} />
+                <Row ico="trash" bg="#ff3b30" title="Delete All Cards" sub={cards.length + ' saved on this device'} onPress={() => cards.length && confirm('Delete all cards?', 'All cards will be removed from this device.', 'Delete all', () => setCards([]))} last />
               </Group>
               {DEV_TOOLS && <>
                 <Sec>Developer</Sec>
-                <Group><Row ico="🛠" bg="#636366" title="Developer mode" sub="Test tools. Remove in the production build." onPress={() => setDev(!dev)} right={<Sw on={dev} />} last /></Group>
+                <Group><Row ico="tool" bg="#636366" title="Developer mode" sub="Test tools. Remove in the production build." onPress={() => setDev(!dev)} right={<Sw on={dev} />} last /></Group>
                 {dev && <Group>
                   <Row title="Dev Mode: Toggle Pro Status" sub={pro ? 'Pro is ON' : 'Pro is OFF'} onPress={toggleDevPro} right={<Sw on={pro} />} />
                   {geoOn && <Row title="Geo-alerts status" sub={gstat?.stale ? `${gstat.count} saved stores · ${gstat.stale}` : gstat?.nearest ? `Watching ${gstat.count} stores · nearest: ${gstat.nearest.name}, ${gstat.nearest.d} m` : geoStatus} onPress={refreshNow} right={<Text style={{ color: t.accent, fontSize: 13, fontWeight: '700' }}>Refresh</Text>} />}
                   <Text style={{ paddingTop: 12, paddingHorizontal: 14, paddingBottom: 4, color: t.sub, fontSize: 13 }}>Geofencing simulator (needs Pro and Geo-alerts ON)</Text>
                   <Sim onPress={() => cards.length ? notifyNear([cards[0].name]) : say('Add a card first')}>🔔 Send test notification</Sim>
                   <Sim onPress={showLog}>📜 Show geo log</Sim>
+                  <Sim onPress={() => setOnb(true)}>👋 Show welcome screens again</Sim>
                   {SIM.map(n => <Sim key={n} onPress={() => simulate(n)}>📍 Simulate: Walking into {n}</Sim>)}
                   <Sim onPress={simulateMall} last>🏬 Simulate: Mall with several of my stores</Sim>
                 </Group>}
@@ -730,10 +744,10 @@ jobs:
             const healthSheet = () => {
               const h = health || {};
               const items = [
-                ['bg', '📍', 'Location: “Allow all the time”', 'Needed so TapPass can notice a store while the app is closed.', 'Open settings', () => Linking.openSettings()],
-                ['precise', '🎯', 'Precise location', 'Approximate location can be off by 1–3 km, which is too far to spot a store.', 'Open settings', () => Linking.openSettings()],
-                ['notif', '🔔', 'Notifications allowed', 'Without them the alert cannot appear.', 'Open settings', () => Linking.openSettings()],
-                ...(Platform.OS === 'android' ? [['battery', '🔋', 'Battery: “Unrestricted”', 'Many phones put apps to sleep to save battery, and then alerts stop. Find TapPass on the list and choose “Don’t optimise” / “Unrestricted”.', 'Fix battery setting', openBattery]] : []),
+                ['bg', 'pin', 'Location: “Allow all the time”', 'Needed so TapPass can notice a store while the app is closed.', 'Open settings', () => Linking.openSettings()],
+                ['precise', 'target', 'Precise location', 'Approximate location can be off by 1–3 km, which is too far to spot a store.', 'Open settings', () => Linking.openSettings()],
+                ['notif', 'bell', 'Notifications allowed', 'Without them the alert cannot appear.', 'Open settings', () => Linking.openSettings()],
+                ...(Platform.OS === 'android' ? [['battery', 'battery', 'Battery: “Unrestricted”', 'Many phones put apps to sleep to save battery, and then alerts stop. Find TapPass on the list and choose “Don’t optimise” / “Unrestricted”.', 'Fix battery setting', openBattery]] : []),
               ];
               return <Sheet onClose={() => setSheet(null)}>
                 <H2>Make alerts reliable</H2>
@@ -741,7 +755,7 @@ jobs:
                 {items.map(([k, ico, title, text, btn, fn]) => { const ok = !!h[k]; return (
                   <View key={k} style={[card, { borderRadius: 20, padding: 14, marginBottom: 10 }]}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                      <Text style={{ fontSize: 22 }}>{ico}</Text>
+                      <Ic name={ico} size={22} color={t.accent} />
                       <B style={{ flex: 1, color: t.text, fontSize: 15 }}>{title}</B>
                       <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: ok ? t.green : '#ff3b30', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{ok ? '✓' : '!'}</Text></View>
                     </View>
@@ -799,19 +813,103 @@ jobs:
                   </View>
                 </Modal>
 
-                <Modal visible={!!full} animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={() => setFull(null)}>
-                  {full && <View style={{ flex: 1, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', paddingTop: 20 + insets.top, paddingBottom: 20 + insets.bottom, paddingHorizontal: 16 }}>
-                    <StatusBar style="dark" />
-                    <Pressable onPress={() => setFull(null)} style={{ position: 'absolute', top: 14 + insets.top, right: 16, backgroundColor: '#eee', borderRadius: 99, paddingVertical: 9, paddingHorizontal: 18 }}><B style={{ color: '#000', fontSize: 16 }}>Close</B></Pressable>
-                    <Tile name={full.name} />
-                    <Text style={{ color: '#000', fontSize: 24, fontWeight: '800', marginTop: 14, marginBottom: 6 }}>{full.name}</Text>
-                    <View style={{ width: '100%', maxWidth: 560, alignItems: 'center' }}><Code card={full} big width={300} /></View>
-                    <Text style={{ color: '#555', fontSize: 14, marginTop: 10, textAlign: 'center' }}>{full.type === 'qr' ? '' : fmtNum(full.num) + ' · '}Hold your screen up to the scanner</Text>
-                    <Text onPress={() => delCard(full)} style={{ color: '#555', fontSize: 14, marginTop: 10, textDecorationLine: 'underline' }}>Delete card</Text>
-                  </View>}
-                </Modal>
+                <FullCard card={full} onClose={() => setFull(null)} onDelete={delCard} />
               </View>
               </Ctx.Provider>
+            );
+          }
+
+          // full-screen code: brand-coloured header, white sheet slides up, brightness at maximum
+          function FullCard({ card, onClose, onDelete }) {
+            const { insets } = useT();
+            const { width } = useWindowDimensions();
+            const up = useRef(new Animated.Value(0)).current;
+            useEffect(() => { if (card) { up.setValue(0); Animated.timing(up, { toValue: 1, duration: 480, easing: Easing.out(Easing.back(1.1)), useNativeDriver: true }).start(); } }, [card]);
+            if (!card) return null;
+            const b = brand(card.name), tc = b.t;
+            const qr = Math.min(width - 72, 320);
+            return (
+              <Modal visible animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={onClose}>
+                <View style={{ flex: 1, backgroundColor: '#fff' }}>
+                  <StatusBar style={tc === '#fff' ? 'light' : 'dark'} />
+                  <LinearGradient colors={[b.c, mix(b.c, '#000000', 0.58)]} start={{ x: 0.2, y: 0 }} end={{ x: 0.8, y: 1 }} style={{ paddingTop: 22 + insets.top, paddingBottom: 52, paddingHorizontal: 20, alignItems: 'center', overflow: 'hidden' }}>
+                    <Text style={{ position: 'absolute', right: -10, bottom: -70, fontSize: 240, lineHeight: 240, fontWeight: '900', color: tc, opacity: 0.13 }}>{b.l}</Text>
+                    <Pressable onPress={onClose} style={{ position: 'absolute', top: 14 + insets.top, right: 16, backgroundColor: 'rgba(255,255,255,0.22)', borderRadius: 99, paddingVertical: 9, paddingHorizontal: 18 }}><B style={{ color: tc, fontSize: 16 }}>Close</B></Pressable>
+                    <View style={{ marginTop: 26 }}><Tile name={card.name} size={64} radius={19} font={32} translucent /></View>
+                    <Text style={{ color: tc, fontSize: 26, fontWeight: '800', letterSpacing: -0.5, marginTop: 10 }}>{card.name}</Text>
+                    {b.p ? <Text style={{ color: tc, opacity: 0.9, fontSize: 14, marginTop: 2 }}>{b.p}</Text> : null}
+                  </LinearGradient>
+                  <Animated.View style={{ flex: 1, backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28, marginTop: -28, alignItems: 'center', justifyContent: 'center', paddingTop: 26, paddingHorizontal: 16, paddingBottom: 22 + insets.bottom,
+                    opacity: up, transform: [{ translateY: up.interpolate({ inputRange: [0, 1], outputRange: [70, 0] }) }] }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#f2f2f7', borderRadius: 99, paddingVertical: 6, paddingHorizontal: 12, marginBottom: 16 }}>
+                      <Ic name="sun" size={13} color="#444" width={2.2} /><B style={{ color: '#444', fontSize: 12 }}>Screen brightness at maximum</B>
+                    </View>
+                    <View style={{ width: '100%', maxWidth: 560, alignItems: 'center' }}><Code card={card} big width={qr} /></View>
+                    <Text style={{ color: '#555', fontSize: 14, marginTop: 12, textAlign: 'center' }}>{card.type === 'qr' ? '' : fmtNum(card.num) + ' · '}Hold your screen up to the scanner</Text>
+                    <Text onPress={() => onDelete(card)} style={{ color: '#555', fontSize: 14, marginTop: 10, textDecorationLine: 'underline' }}>Delete card</Text>
+                  </Animated.View>
+                </View>
+              </Modal>
+            );
+          }
+
+          // ---------- welcome screens (first launch) ----------
+          const OB = [
+            { art: 'A', h: [['Your loyalty cards,'], [['sorted', 1], '.']], p: 'Keep every loyalty card on your phone and show it at the till in a second.', btn: 'Let’s get started' },
+            { art: 'B', h: [['Your card finds you'], [['at the store', 1], '.']], p: 'Walk up to a shop and TapPass sends a notification. One tap and your code is on screen, ready to scan.', btn: 'Next' },
+            { art: 'C', h: [['Never ', ['search', 1], ' for a'], ['card again.']], p: 'Store alerts are part of TapPass Pro. Try everything free for 14 days and cancel anytime.', btn: 'Try Pro free for 14 days', ghost: 'Continue with Free' },
+          ];
+          const UNDERLINE = '<svg viewBox="0 0 140 13" preserveAspectRatio="none"><path d="M3 9 C 40 2, 96 1, 137 6" fill="none" stroke="#ffd166" stroke-width="3.5" stroke-linecap="round"/></svg>';
+          function Headline({ lines, size }) {
+            const st = { color: '#f4f4f7', fontSize: size, fontWeight: '800', letterSpacing: -1.2, lineHeight: size * 1.12 };
+            return <View style={{ marginTop: 6, marginBottom: 12 }}>
+              {lines.map((ln, i) => <View key={i} style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                {ln.map((pc, j) => Array.isArray(pc)
+                  ? <View key={j}><Text style={st}>{pc[0]}</Text><View pointerEvents="none" style={{ position: 'absolute', left: '-3%', right: '-3%', bottom: -6, height: 13 }}><SvgXml xml={UNDERLINE} width="100%" height={13} /></View></View>
+                  : <Text key={j} style={st}>{pc}</Text>)}
+              </View>)}
+            </View>;
+          }
+          function Onboarding({ onDone, onPro }) {
+            const insets = useSafeAreaInsets();
+            const { width, height } = useWindowDimensions();
+            const [i, setI] = useState(0);
+            const [pageH, setPageH] = useState(0);
+            const ref = useRef(null);
+            const pop = useRef(new Animated.Value(0)).current;
+            useEffect(() => { pop.setValue(0); Animated.timing(pop, { toValue: 1, duration: 650, easing: Easing.out(Easing.back(1.4)), useNativeDriver: true }).start(); }, [i]);
+            const go = n => { setI(n); ref.current?.scrollTo({ x: n * width, animated: true }); };
+            const o = OB[i], last = i === OB.length - 1;
+            const size = Math.min(38, Math.max(30, width * 0.086));
+            return (
+              <View style={{ flex: 1, backgroundColor: '#121214' }}>
+                <StatusBar style="light" />
+                {!last && <Pressable onPress={onDone} hitSlop={10} style={{ position: 'absolute', top: 14 + insets.top, right: 18, zIndex: 3, padding: 6 }}><B style={{ color: '#9b9cad', fontSize: 14 }}>Skip</B></Pressable>}
+                <ScrollView ref={ref} horizontal pagingEnabled showsHorizontalScrollIndicator={false} style={{ flex: 1 }} onLayout={e => setPageH(e.nativeEvent.layout.height)}
+                  onMomentumScrollEnd={e => { const n = Math.round(e.nativeEvent.contentOffset.x / width); if (n !== i) setI(n); }}>
+                  {OB.map((x, k) => (
+                    <View key={k} style={{ width, height: pageH || undefined, paddingTop: 16 + insets.top, paddingHorizontal: 26 }}>
+                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: height * 0.36 }}>
+                        <Animated.View style={k === i ? { opacity: pop, transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1] }) }, { translateY: pop.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }] } : null}>
+                          <SvgXml xml={ART[x.art]} width={Math.min(width - 52, 380)} height={Math.min(width - 52, 380) * 300 / 320} />
+                        </Animated.View>
+                      </View>
+                      <Headline lines={x.h} size={size} />
+                      <Text style={{ color: '#9b9cad', fontSize: 15, lineHeight: 22.5 }}>{x.p}</Text>
+                    </View>))}
+                </ScrollView>
+                <View style={{ paddingTop: 20, paddingHorizontal: 26, paddingBottom: 22 + insets.bottom }}>
+                  <View style={{ flexDirection: 'row', gap: 6, marginBottom: 18 }}>
+                    {OB.map((_, k) => <View key={k} style={{ width: k === i ? 26 : 8, height: 8, borderRadius: 99, backgroundColor: k === i ? '#a99bff' : '#34343f' }} />)}
+                  </View>
+                  <Pressable onPress={() => last ? onPro() : go(i + 1)} style={{ width: '100%', padding: 17, borderRadius: 99, backgroundColor: '#a99bff' }}>
+                    <Text style={{ color: '#14141a', fontWeight: '800', fontSize: 17, textAlign: 'center' }}>{o.btn}</Text>
+                  </Pressable>
+                  {o.ghost ? <Pressable onPress={onDone} style={{ width: '100%', padding: 16, marginTop: 10, borderRadius: 99, backgroundColor: '#1c1c20' }}>
+                    <Text style={{ color: '#f4f4f7', fontWeight: '700', fontSize: 15, textAlign: 'center' }}>{o.ghost}</Text>
+                  </Pressable> : null}
+                </View>
+              </View>
             );
           }
 
@@ -870,9 +968,9 @@ jobs:
               <Sheet onClose={close}>
                 <H2>Add Card</H2>
                 <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
-                  {[['📷', 'Scan with camera', openScanner], ['🖼', 'Import code image', importImage]].map(([i, l, f]) => (
+                  {[['camera', 'Scan with camera', openScanner], ['image', 'Import code image', importImage]].map(([i, l, f]) => (
                     <Pressable key={l} onPress={f} style={[card, { flex: 1, borderRadius: 20, paddingVertical: 12, paddingHorizontal: 6, alignItems: 'center', gap: 4 }]}>
-                      <Text style={{ fontSize: 24 }}>{i}</Text><Text style={{ color: t.accent, fontWeight: '700', fontSize: 12 }}>{l}</Text></Pressable>))}
+                      <Ic name={i} size={26} color={t.accent} width={1.9} /><Text style={{ color: t.accent, fontWeight: '700', fontSize: 12 }}>{l}</Text></Pressable>))}
                 </View>
                 <Text style={lbl}>Store</Text>
                 <TextInput style={inp} value={name} onChangeText={setName} placeholder="Start typing, e.g. “Sta”" placeholderTextColor={t.sub} autoCorrect={false}
@@ -1237,7 +1335,7 @@ jobs:
           const setStatus = s => save('geoStatus', { t: Date.now(), ...s });
           export const getStatus = () => load('geoStatus');
 
-          const LOC_VERSION = '2';   // bump when the watcher settings change so old watchers are restarted
+          const LOC_VERSION = '3';   // bump when the watcher settings change so old watchers are restarted
           async function startLoc() {
             if (Platform.OS !== 'android') return;
             if (await Location.hasStartedLocationUpdatesAsync(LOC_TASK)) {
@@ -1249,7 +1347,7 @@ jobs:
               // real GPS every ~10 s / 25 m: "balanced" (Wi-Fi/cell) mode gave almost no updates with the screen off
               accuracy: Location.Accuracy.High, distanceInterval: 25, timeInterval: 10000, deferredUpdatesInterval: 0,
               pausesUpdatesAutomatically: false,
-              foregroundService: { notificationTitle: 'TapPass is watching for nearby stores', notificationBody: 'So your card is ready when you arrive.', notificationColor: '#5a3df0' },
+              foregroundService: { notificationTitle: 'TapPass', notificationBody: 'Watching for your stores nearby', notificationColor: '#6f7285' },   // quiet grey, not brand purple
             });
           }
           async function stopLoc() {
@@ -1394,6 +1492,39 @@ jobs:
           if __name__ == '__main__':
               if len(sys.argv) > 3: main(sys.argv[3])
               else: print(latest_zip())
+          TAPPASS_EOF
+          cat > art.js <<'TAPPASS_EOF'
+          // original onboarding illustrations (same artwork as the HTML preview)
+          export const ART = {
+          "A": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 300\"><path d=\"M-20 230 C 40 120, 150 60, 230 90 S 330 200, 250 250 S 90 250, 120 170 S 260 60, 340 40\" fill=\"none\" stroke=\"#24242c\" stroke-width=\"26\" stroke-linecap=\"round\"/>\n<circle cx=\"262\" cy=\"52\" r=\"20\" fill=\"#ffd166\"/><g stroke=\"#ffd166\" stroke-width=\"3\" stroke-linecap=\"round\"><path d=\"M262 20v-8M262 92v-8M230 52h-8M302 52h-8M239 29l-6-6M291 81l-6-6M285 29l6-6M233 81l6-6\"/></g>\n<path d=\"M255 54q7 6 14 0\" fill=\"none\" stroke=\"#14141a\" stroke-width=\"2.5\" stroke-linecap=\"round\"/><circle cx=\"255\" cy=\"46\" r=\"2\" fill=\"#14141a\"/><circle cx=\"269\" cy=\"46\" r=\"2\" fill=\"#14141a\"/>\n<g transform=\"rotate(-16 94.0 138.0)\"><rect x=\"28\" y=\"96\" width=\"132\" height=\"84\" rx=\"12\" fill=\"#ff8a3d\" stroke=\"#14141a\" stroke-width=\"3\"/><rect x=\"40\" y=\"108\" width=\"34\" height=\"8\" rx=\"4\" fill=\"#ffd8b5\"/><circle cx=\"140\" cy=\"114\" r=\"8\" fill=\"#ffd8b5\" opacity=\".9\"/><rect x=\"38\" y=\"150\" width=\"112\" height=\"22\" rx=\"5\" fill=\"#fff\"/><rect x=\"44\" y=\"153\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"48\" y=\"153\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"50\" y=\"153\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"55\" y=\"153\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"58\" y=\"153\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"62\" y=\"153\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"64\" y=\"153\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"69\" y=\"153\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"71\" y=\"153\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"75\" y=\"153\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"78\" y=\"153\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"80\" y=\"153\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"84\" y=\"153\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"88\" y=\"153\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"90\" y=\"153\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/></g><g transform=\"rotate(14 234.0 134.0)\"><rect x=\"168\" y=\"92\" width=\"132\" height=\"84\" rx=\"12\" fill=\"#34c759\" stroke=\"#14141a\" stroke-width=\"3\"/><rect x=\"180\" y=\"104\" width=\"34\" height=\"8\" rx=\"4\" fill=\"#c9f5d4\"/><circle cx=\"280\" cy=\"110\" r=\"8\" fill=\"#c9f5d4\" opacity=\".9\"/><rect x=\"178\" y=\"146\" width=\"112\" height=\"22\" rx=\"5\" fill=\"#fff\"/><rect x=\"184\" y=\"149\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"188\" y=\"149\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"190\" y=\"149\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"195\" y=\"149\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"198\" y=\"149\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"202\" y=\"149\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"204\" y=\"149\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"209\" y=\"149\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"211\" y=\"149\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"215\" y=\"149\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"218\" y=\"149\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"220\" y=\"149\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"224\" y=\"149\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"228\" y=\"149\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"230\" y=\"149\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/></g>\n<rect x=\"108\" y=\"52\" width=\"108\" height=\"196\" rx=\"24\" fill=\"#2b2b3a\" stroke=\"#f4f4f7\" stroke-width=\"3\"/>\n<rect x=\"117\" y=\"64\" width=\"90\" height=\"172\" rx=\"17\" fill=\"#1c1c20\"/><rect x=\"146\" y=\"70\" width=\"32\" height=\"6\" rx=\"3\" fill=\"#2b2b3a\"/>\n<rect x=\"124\" y=\"88\" width=\"76\" height=\"46\" rx=\"10\" fill=\"#a99bff\"/><rect x=\"131\" y=\"95\" width=\"22\" height=\"6\" rx=\"3\" fill=\"#fff\" opacity=\".9\"/>\n<rect x=\"124\" y=\"142\" width=\"76\" height=\"46\" rx=\"10\" fill=\"#ff8a3d\"/><rect x=\"131\" y=\"149\" width=\"22\" height=\"6\" rx=\"3\" fill=\"#fff\" opacity=\".9\"/>\n<rect x=\"124\" y=\"196\" width=\"76\" height=\"30\" rx=\"10\" fill=\"#34c759\"/><rect x=\"131\" y=\"203\" width=\"22\" height=\"6\" rx=\"3\" fill=\"#fff\" opacity=\".9\"/>\n<g transform=\"rotate(-7 122.0 232.0)\"><rect x=\"52\" y=\"188\" width=\"140\" height=\"88\" rx=\"12\" fill=\"#a99bff\" stroke=\"#14141a\" stroke-width=\"3\"/><rect x=\"64\" y=\"200\" width=\"34\" height=\"8\" rx=\"4\" fill=\"#e4deff\"/><circle cx=\"172\" cy=\"206\" r=\"8\" fill=\"#e4deff\" opacity=\".9\"/><rect x=\"62\" y=\"246\" width=\"120\" height=\"22\" rx=\"5\" fill=\"#fff\"/><rect x=\"68\" y=\"249\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"72\" y=\"249\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"74\" y=\"249\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"79\" y=\"249\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"82\" y=\"249\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"86\" y=\"249\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"88\" y=\"249\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"93\" y=\"249\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"95\" y=\"249\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"99\" y=\"249\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"102\" y=\"249\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"104\" y=\"249\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"108\" y=\"249\" width=\"2\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"112\" y=\"249\" width=\"1\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/><rect x=\"114\" y=\"249\" width=\"3\" height=\"16\" rx=\"0.5\" fill=\"#22307a\"/></g>\n<path d=\"M236 214l28-12-9 28-5-11z\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2.5\" stroke-linejoin=\"round\"/><path d=\"M250 219l14-17\" stroke=\"#f4f4f7\" stroke-width=\"2\"/>\n<path d=\"M30 60 q14 -16 28 0 q14 16 28 0\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-dasharray=\"1 7\"/>\n<path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(76 36) scale(1.1)\" fill=\"#f4f4f7\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(292 150) scale(0.8)\" fill=\"#f4f4f7\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(24 250) scale(0.9)\" fill=\"#ffd166\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(228 268) scale(0.7)\" fill=\"#f4f4f7\"/><circle cx=\"48\" cy=\"140\" r=\"3\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/><circle cx=\"300\" cy=\"118\" r=\"2.5\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/><circle cx=\"96\" cy=\"282\" r=\"2.5\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/></svg>",
+          "B": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 300\"><path d=\"M-20 230 C 40 120, 150 60, 230 90 S 330 200, 250 250 S 90 250, 120 170 S 260 60, 340 40\" fill=\"none\" stroke=\"#24242c\" stroke-width=\"26\" stroke-linecap=\"round\"/>\n<path d=\"M60 276 C 70 250, 110 248, 120 236\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2.5\" stroke-dasharray=\"2 9\" stroke-linecap=\"round\"/>\n<rect x=\"96\" y=\"128\" width=\"196\" height=\"132\" rx=\"8\" fill=\"#2b2b3a\" stroke=\"#f4f4f7\" stroke-width=\"3\"/>\n<rect x=\"110\" y=\"152\" width=\"78\" height=\"62\" rx=\"6\" fill=\"#1c1c20\" stroke=\"#f4f4f7\" stroke-width=\"2.5\"/>\n<path d=\"M114 176h70M114 196h70\" stroke=\"#3a3a4d\" stroke-width=\"3\"/><rect x=\"120\" y=\"162\" width=\"12\" height=\"12\" rx=\"2\" fill=\"#ff8a3d\"/><rect x=\"138\" y=\"164\" width=\"10\" height=\"10\" rx=\"2\" fill=\"#34c759\"/><rect x=\"152\" y=\"182\" width=\"14\" height=\"12\" rx=\"2\" fill=\"#ffd166\"/><rect x=\"124\" y=\"184\" width=\"10\" height=\"10\" rx=\"2\" fill=\"#a99bff\"/>\n<rect x=\"206\" y=\"160\" width=\"68\" height=\"100\" rx=\"6\" fill=\"#a99bff\" stroke=\"#f4f4f7\" stroke-width=\"3\"/><circle cx=\"260\" cy=\"214\" r=\"4\" fill=\"#14141a\"/><rect x=\"216\" y=\"172\" width=\"48\" height=\"30\" rx=\"4\" fill=\"#c9c0ff\"/>\n<path d=\"M86 104 h216 l-10 26 h-196 z\" fill=\"#f4f4f7\"/>\n<g fill=\"#a99bff\"><path d=\"M86 104h27l-6 26h-21z\"/><path d=\"M140 104h27l-3 26h-21z\"/><path d=\"M194 104h27l0 26h-21z\"/><path d=\"M248 104h27l3 26h-21z\"/></g>\n<path d=\"M90 130 q11 12 22 0 q11 12 22 0 q11 12 22 0 q11 12 22 0 q11 12 22 0 q11 12 22 0 q11 12 22 0 q11 12 22 0 q11 12 22 0\" fill=\"#f4f4f7\"/>\n<ellipse cx=\"248\" cy=\"92\" rx=\"26\" ry=\"7\" fill=\"none\" stroke=\"#ff8a3d\" stroke-width=\"2\" opacity=\".5\"/><ellipse cx=\"248\" cy=\"92\" rx=\"14\" ry=\"4\" fill=\"#ff8a3d\" opacity=\".35\"/>\n<path d=\"M248 92 C 232 72, 226 62, 226 50 a22 22 0 0 1 44 0 C 270 62, 264 72, 248 92z\" fill=\"#ff8a3d\" stroke=\"#14141a\" stroke-width=\"3\"/><circle cx=\"248\" cy=\"50\" r=\"9\" fill=\"#fff\"/>\n<g transform=\"rotate(-6 92 56)\"><rect x=\"18\" y=\"30\" width=\"150\" height=\"54\" rx=\"16\" fill=\"#f4f4f7\"/><rect x=\"28\" y=\"41\" width=\"32\" height=\"32\" rx=\"9\" fill=\"#5a3df0\"/>\n<rect x=\"35\" y=\"50\" width=\"18\" height=\"12\" rx=\"2.5\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2.2\"/><path d=\"M35 54h18\" stroke=\"#fff\" stroke-width=\"2.2\"/>\n<rect x=\"68\" y=\"44\" width=\"44\" height=\"7\" rx=\"3.5\" fill=\"#14141a\"/><rect x=\"68\" y=\"57\" width=\"84\" height=\"6\" rx=\"3\" fill=\"#9b9cad\"/><rect x=\"68\" y=\"67\" width=\"62\" height=\"6\" rx=\"3\" fill=\"#9b9cad\"/>\n<path d=\"M60 84 l10 12 l6 -12z\" fill=\"#f4f4f7\"/></g>\n<path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(190 40) scale(1)\" fill=\"#f4f4f7\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(300 146) scale(0.8)\" fill=\"#ffd166\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(36 170) scale(0.8)\" fill=\"#f4f4f7\"/><circle cx=\"30\" cy=\"120\" r=\"3\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/><circle cx=\"196\" cy=\"78\" r=\"2.5\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/><circle cx=\"78\" cy=\"232\" r=\"2.5\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/></svg>",
+          "C": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 300\"><path d=\"M-20 230 C 40 120, 150 60, 230 90 S 330 200, 250 250 S 90 250, 120 170 S 260 60, 340 40\" fill=\"none\" stroke=\"#24242c\" stroke-width=\"26\" stroke-linecap=\"round\"/>\n<path d=\"M44 190 L160 130 L276 190 L160 250 Z\" fill=\"#2b2b3a\" stroke=\"#f4f4f7\" stroke-width=\"3\" stroke-linejoin=\"round\"/>\n<path d=\"M79 172 L195 232 M125 148 L241 208 M102 202 L218 142 M137 220 L253 160\" stroke=\"#3a3a4d\" stroke-width=\"5\" stroke-linecap=\"round\"/>\n<path d=\"M200 182 q18 -8 30 4 q-6 14 -24 10 z\" fill=\"#34c759\" opacity=\".8\"/><circle cx=\"96\" cy=\"188\" r=\"7\" fill=\"#ffd166\" opacity=\".8\"/>\n<ellipse cx=\"160\" cy=\"196\" rx=\"56\" ry=\"26\" fill=\"none\" stroke=\"#a99bff\" stroke-width=\"2.5\" stroke-dasharray=\"4 7\"/><ellipse cx=\"160\" cy=\"196\" rx=\"30\" ry=\"13\" fill=\"none\" stroke=\"#a99bff\" stroke-width=\"2.5\"/>\n<ellipse cx=\"160\" cy=\"196\" rx=\"12\" ry=\"5\" fill=\"#14141a\" opacity=\".5\"/>\n<path d=\"M160 196 C 134 164, 124 148, 124 128 a36 36 0 0 1 72 0 C 196 148, 186 164, 160 196z\" fill=\"#a99bff\" stroke=\"#14141a\" stroke-width=\"3\"/>\n<circle cx=\"160\" cy=\"127\" r=\"19\" fill=\"#fff\"/><path d=\"M151 127l6 6 12 -13\" fill=\"none\" stroke=\"#5a3df0\" stroke-width=\"4.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n<g transform=\"translate(238 52)\"><path d=\"M-16 14V2a16 16 0 0 1 32 0v12l5 5h-42z\" fill=\"#ffd166\" stroke=\"#14141a\" stroke-width=\"3\" stroke-linejoin=\"round\"/><path d=\"M-6 22a6 6 0 0 0 12 0\" fill=\"none\" stroke=\"#14141a\" stroke-width=\"3\"/>\n<path d=\"M22 -12q8 8 0 18M28 -18q14 14 0 30\" fill=\"none\" stroke=\"#ffd166\" stroke-width=\"2.5\" stroke-linecap=\"round\"/></g>\n<g transform=\"translate(46 66) rotate(-10)\"><rect x=\"0\" y=\"0\" width=\"58\" height=\"30\" rx=\"7\" fill=\"#1c1c20\" stroke=\"#f4f4f7\" stroke-width=\"3\"/><rect x=\"58\" y=\"10\" width=\"6\" height=\"10\" rx=\"2\" fill=\"#f4f4f7\"/>\n<rect x=\"5\" y=\"5\" width=\"48\" height=\"20\" rx=\"4\" fill=\"#34c759\"/><path d=\"M31 8l-7 9h6l-3 7 9-10h-6z\" fill=\"#14141a\"/></g>\n<path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(118 40) scale(1)\" fill=\"#f4f4f7\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(286 226) scale(0.9)\" fill=\"#f4f4f7\"/><path d=\"M0,-9 C1.2,-2.4 2.4,-1.2 9,0 C2.4,1.2 1.2,2.4 0,9 C-1.2,2.4 -2.4,1.2 -9,0 C-2.4,-1.2 -1.2,-2.4 0,-9Z\" transform=\"translate(30 258) scale(0.8)\" fill=\"#ffd166\"/><circle cx=\"206\" cy=\"30\" r=\"2.5\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/><circle cx=\"296\" cy=\"120\" r=\"3\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/><circle cx=\"64\" cy=\"140\" r=\"2.5\" fill=\"none\" stroke=\"#f4f4f7\" stroke-width=\"2\"/></svg>"
+          };
+
+          // line icons (24x24, stroke) - same set as the HTML preview
+          export const IC={
+           star:'<path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/>',
+           refresh:'<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v5h-5"/>',
+           gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+           pin:'<path d="M12 21s-6.5-5.8-6.5-11a6.5 6.5 0 0 1 13 0c0 5.2-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.4"/>',
+           battery:'<rect x="2.5" y="7" width="17" height="10" rx="2.5"/><path d="M22 10.5v3M11.5 9.5l-2 3h3l-2 3"/>',
+           theme:'<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="#fff"/>',
+           mail:'<rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3.8 7l8.2 6 8.2-6"/>',
+           doc:'<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/>',
+           lock:'<rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/>',
+           clock:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+           trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>',
+           tool:'<path d="M14.5 5.5a4 4 0 0 0 4.9 4.9L11 18.8a2.1 2.1 0 0 1-3-3l8.4-8.4"/><path d="M14.5 5.5l2.2-2.2 4 4-2.2 2.2"/>',
+           alert:'<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.3v.2"/>',
+           check:'<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+           target:'<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.2"/><circle cx="12" cy="12" r=".8" fill="#fff"/>',
+           bell:'<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.8 2H4.2z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/>',
+           camera:'<rect x="3" y="7" width="18" height="13" rx="3"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8.5 7l1.5-2.5h4L15.5 7"/>',
+           image:'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 15.5l-5-5-9.5 9.5"/>',
+           receipt:'<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+           plus:'<path d="M12 5v14M5 12h14"/>',
+           sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+          };
           TAPPASS_EOF
           cat > stores.js <<'TAPPASS_EOF'
           // [name, brand color, initial, optional letter color, loyalty programme] - original tiles, not official logos
