@@ -1795,7 +1795,8 @@ jobs:
                   "POST_NOTIFICATIONS",
                   "CAMERA",
                   "FOREGROUND_SERVICE",
-                  "FOREGROUND_SERVICE_LOCATION"
+                  "FOREGROUND_SERVICE_LOCATION",
+                  "com.android.vending.BILLING"
                 ],
                 "adaptiveIcon": {
                   "foregroundImage": "./assets/adaptive-icon.png",
@@ -1893,6 +1894,9 @@ jobs:
           echo "EXPO_PUBLIC_DEV_TOOLS=${{ vars.EXPO_PUBLIC_DEV_TOOLS || '1' }}" >> .env
           echo "EXPO_PUBLIC_OVERPASS_URL=${{ secrets.EXPO_PUBLIC_OVERPASS_URL }}" >> .env
 
+      - name: Version code = build number (Google Play needs a higher number for every upload)
+        run: node -e "const f='app.json',j=require('./'+f);j.expo.android.versionCode=${{ github.run_number }};j.expo.version='1.0.0';require('fs').writeFileSync(f,JSON.stringify(j,null,2))"
+
       - name: Generate native Android project
         run: npx expo prebuild --platform android --clean
 
@@ -1909,7 +1913,8 @@ jobs:
         run: |
           chmod +x gradlew
           if [ "$HAS_KEYSTORE" = "true" ]; then
-            ./gradlew assembleRelease --no-daemon \
+            # APK for your phone + AAB for Google Play, both signed with the upload key
+            ./gradlew assembleRelease bundleRelease --no-daemon \
               -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/release.keystore" \
               -Pandroid.injected.signing.store.password="$KS_PASS" \
               -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
@@ -1919,7 +1924,9 @@ jobs:
           fi
 
       - name: Collect APK
-        run: cp android/app/build/outputs/apk/release/*.apk tappass.apk
+        run: |
+          cp android/app/build/outputs/apk/release/*.apk tappass.apk
+          if ls android/app/build/outputs/bundle/release/*.aab >/dev/null 2>&1; then cp android/app/build/outputs/bundle/release/*.aab tappass.aab; fi
 
       - name: Publish to Releases
         uses: softprops/action-gh-release@v2
@@ -1927,4 +1934,6 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: TapPass build ${{ github.run_number }}
           prerelease: true
-          files: tappass.apk
+          files: |
+            tappass.apk
+            tappass.aab
