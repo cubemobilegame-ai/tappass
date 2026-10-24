@@ -43,7 +43,7 @@ jobs:
           mkdir -p assets
           cat > App.js <<'TAPPASS_EOF'
           import React, { useEffect, useRef, useState } from 'react';
-          import { View, Text as RNText, Pressable, Modal, TextInput as RNTextInput, ScrollView, StyleSheet, Linking, Platform, useColorScheme, AppState, KeyboardAvoidingView, Alert, BackHandler } from 'react-native';
+          import { ActivityIndicator, View, Text as RNText, Pressable, Modal, TextInput as RNTextInput, ScrollView, StyleSheet, Linking, Platform, useColorScheme, AppState, KeyboardAvoidingView, Alert, BackHandler } from 'react-native';
           import { StatusBar } from 'expo-status-bar';
           import { useFonts, PlusJakartaSans_400Regular, PlusJakartaSans_500Medium, PlusJakartaSans_600SemiBold, PlusJakartaSans_700Bold, PlusJakartaSans_800ExtraBold } from '@expo-google-fonts/plus-jakarta-sans';
           import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -83,14 +83,36 @@ jobs:
           async function scanLog(m) {
             try { const l = JSON.parse((await AsyncStorage.getItem('scanLog')) || '[]'); l.unshift(`${new Date().toLocaleTimeString()} ${m}`); await AsyncStorage.setItem('scanLog', JSON.stringify(l.slice(0, 30))); } catch (e) {}
           }
-          async function resizedJpeg(uri, w) {
+          // resized copy of a photo (native, fast). Returns { uri, base64? }
+          async function resized(uri, w, base64 = false) {
             const IM = ImageManipulator.ImageManipulator;
             if (IM && IM.manipulate) {                       // new API (SDK 52+)
               const ctx = IM.manipulate(uri); ctx.resize({ width: w });
               const img = await ctx.renderAsync();
-              return (await img.saveAsync({ base64: true, compress: 0.92, format: ImageManipulator.SaveFormat.JPEG })).base64;
+              return await img.saveAsync({ base64, compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
             }
-            return (await ImageManipulator.manipulateAsync(uri, [{ resize: { width: w } }], { base64: true, compress: 0.92, format: ImageManipulator.SaveFormat.JPEG })).base64;
+            return await ImageManipulator.manipulateAsync(uri, [{ resize: { width: w } }], { base64, compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
+          }
+          // Reads a code from a gallery photo: phone's own reader on a resized copy (fast), then on the
+          // original, and only then our slower JavaScript reader on a small copy.
+          async function readPhoto(uri, width) {
+            const t0 = Date.now(), steps = [];
+            const sys = async (u, tag) => {
+              try { const r = (await CameraView.scanFromURLAsync(u, SCAN_TYPES)).map(normScan).filter(plausible)[0] || null; steps.push(`${tag}:${r ? 'ok' : '-'}`); return r; }
+              catch (e) { steps.push(`${tag} err ${String(e.message || e).slice(0, 40)}`); return null; }
+            };
+            let r = null;
+            try { const small = await resized(uri, Math.min(1600, width || 1600)); r = await sys(small.uri, 'sys1600'); } catch (e) { steps.push('resize err ' + String(e.message || e).slice(0, 40)); }
+            if (!r) r = await sys(uri, 'sysFull');
+            if (!r) {
+              try {
+                const s2 = await resized(uri, Math.min(1000, width || 1000), true);
+                await new Promise(ok => setTimeout(ok, 30));
+                const d = normScan(decodeJpegBase64(s2.base64)); r = plausible(d) ? d : null; steps.push(`js1000:${r ? 'ok' : '-'}`);
+              } catch (e) { steps.push('js err ' + String(e.message || e).slice(0, 40)); }
+            }
+            await scanLog(`photo ${width || '?'}px ${Date.now() - t0} ms ${steps.join(' ')}${r ? ' -> ' + r.type + ' ' + r.data.slice(0, 24) : ''}`);
+            return r;
           }
           const SIM = ['Tesco', "Sainsbury's", 'Argos', 'Boots', 'CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks', 'Żabka', 'Biedronka'];
 
@@ -979,26 +1001,17 @@ jobs:
               scanLog(`camera ${r.type} ${r.data.slice(0, 40)} (read ${n}x)`);
               apply(r);
             };
-            const importImage = async () => {
-              const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+            const [busy, setBusy] = useState(false);
+            const importImage = async (crop = false) => {
+              const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1, allowsEditing: crop });
               if (res.canceled) return;
-              const asset = res.assets[0], uri = asset.uri;
-              say('Reading code…');
-              await scanLog(`photo ${asset.width}x${asset.height}`);
-              let r = null;
-              try { const all = (await CameraView.scanFromURLAsync(uri, SCAN_TYPES)).map(normScan).filter(plausible); r = all[0] || null; await scanLog(`system reader: ${r ? r.type + ' ' + r.data.slice(0, 30) : 'nothing'}`); }
-              catch (e) { await scanLog('system reader error: ' + String(e.message || e).slice(0, 80)); }
-              // the system reader often finds nothing in gallery photos: read the picture ourselves at a few sizes
-              if (!r) for (const w of [1200, 1800, 800]) {
-                try {
-                  const b64 = await resizedJpeg(uri, Math.min(w, asset.width || w));
-                  await new Promise(ok => setTimeout(ok, 30));      // let the "Reading code…" toast draw first
-                  const d = normScan(decodeJpegBase64(b64));
-                  await scanLog(`own reader ${w}px: ${d ? d.type + ' ' + d.data.slice(0, 30) : 'nothing'}`);
-                  if (plausible(d)) { r = d; break; }
-                } catch (e) { await scanLog(`own reader ${w}px error: ` + String(e.message || e).slice(0, 80)); }
-              }
-              apply(r);
+              const asset = res.assets[0];
+              setBusy(true);
+              const r = await readPhoto(asset.uri, asset.width);
+              setBusy(false);
+              if (r) return apply(r);
+              Alert.alert('No code found', crop ? 'Try a sharper photo with the barcode filling most of the picture, or scan the card with the camera.' : 'Crop the photo to just the barcode and try again. It is faster and more reliable.',
+                crop ? [{ text: 'OK' }] : [{ text: 'Cancel', style: 'cancel' }, { text: 'Crop photo', onPress: () => importImage(true) }]);
             };
             const ok = name.trim() && num.length >= 4;
             const inp = { width: '100%', fontSize: 16, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 16, borderWidth: 1.5, borderColor: t.line, backgroundColor: t.card, color: t.text, marginTop: 6, marginBottom: 12 };
@@ -1023,7 +1036,7 @@ jobs:
               <Sheet onClose={close}>
                 <H2>Add Card</H2>
                 <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
-                  {[['camera', 'Scan with camera', openScanner], ['image', 'Import code image', importImage]].map(([i, l, f]) => (
+                  {[['camera', 'Scan with camera', openScanner], ['image', 'Import code image', () => importImage(false)]].map(([i, l, f]) => (
                     <Pressable key={l} onPress={f} style={[card, { flex: 1, borderRadius: 20, paddingVertical: 12, paddingHorizontal: 6, alignItems: 'center', gap: 4 }]}>
                       <Ic name={i} size={26} color={t.accent} width={1.9} /><Text style={{ color: t.accent, fontWeight: '700', fontSize: 12 }}>{l}</Text></Pressable>))}
                 </View>
@@ -1048,6 +1061,13 @@ jobs:
                   {num ? <Code card={{ num, type, fmt }} /> : <Text style={{ color: '#888', fontSize: 14 }}>Code preview appears here</Text>}
                 </View>
                 <Cta disabled={!ok} onPress={() => onSave({ name: resolveName(name), num, type, fmt })}>Save Card</Cta>
+                <Modal visible={busy} transparent animationType="fade" statusBarTranslucent>
+                  <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={[card, { borderRadius: 22, paddingVertical: 22, paddingHorizontal: 30, alignItems: 'center', gap: 12 }]}>
+                      <ActivityIndicator size="large" color={t.accent} /><B style={{ color: t.text, fontSize: 15 }}>Reading code…</B>
+                    </View>
+                  </View>
+                </Modal>
               </Sheet>
             );
           }
