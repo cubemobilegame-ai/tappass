@@ -1775,7 +1775,7 @@ jobs:
               "orientation": "portrait",
               "userInterfaceStyle": "automatic",
               "ios": {
-                "bundleIdentifier": "com.tappass.app",
+                "bundleIdentifier": "com.cubemobilegames.tappass",
                 "supportsTablet": false,
                 "infoPlist": {
                   "UIBackgroundModes": [
@@ -1787,7 +1787,7 @@ jobs:
                 }
               },
               "android": {
-                "package": "com.tappass.app",
+                "package": "com.cubemobilegames.tappass",
                 "permissions": [
                   "ACCESS_FINE_LOCATION",
                   "ACCESS_COARSE_LOCATION",
