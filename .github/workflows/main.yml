@@ -70,6 +70,28 @@ jobs:
           const FREE_LIMIT = 3;
           const FMT = { ean13: 'EAN13', ean8: 'EAN8', upc_a: 'UPC', upc_e: 'UPCE', code39: 'CODE39', code128: 'CODE128', itf14: 'ITF', codabar: 'codabar' };
           const SCAN_TYPES = ['qr', ...Object.keys(FMT)];
+          // camera: leave out ITF and Codabar - they have no check digit and produce random "codes" from blurry frames
+          const CAM_TYPES = ['qr', 'ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'pdf417'];
+          const CHECKED = ['qr', 'ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'pdf417', 'aztec', 'datamatrix'];   // formats with a check digit
+          const MLKIT = { 1: 'code128', 2: 'code39', 4: 'code93', 8: 'codabar', 16: 'datamatrix', 32: 'ean13', 64: 'ean8', 128: 'itf14', 256: 'qr', 512: 'upc_a', 1024: 'upc_e', 2048: 'pdf417', 4096: 'aztec' };
+          const normScan = r => r && r.data ? { data: String(r.data), type: typeof r.type === 'number' ? (MLKIT[r.type] || 'code128') : String(r.type || '').toLowerCase().replace('-', '_') } : null;
+          const plausible = r => {
+            if (!r || !r.data) return false;
+            if (['qr', 'pdf417', 'aztec', 'datamatrix'].includes(r.type)) return r.data.length >= 1;
+            return r.data.length >= 4 && /^[\x20-\x7E]+$/.test(r.data);    // 1D loyalty codes are plain ASCII
+          };
+          async function scanLog(m) {
+            try { const l = JSON.parse((await AsyncStorage.getItem('scanLog')) || '[]'); l.unshift(`${new Date().toLocaleTimeString()} ${m}`); await AsyncStorage.setItem('scanLog', JSON.stringify(l.slice(0, 30))); } catch (e) {}
+          }
+          async function resizedJpeg(uri, w) {
+            const IM = ImageManipulator.ImageManipulator;
+            if (IM && IM.manipulate) {                       // new API (SDK 52+)
+              const ctx = IM.manipulate(uri); ctx.resize({ width: w });
+              const img = await ctx.renderAsync();
+              return (await img.saveAsync({ base64: true, compress: 0.92, format: ImageManipulator.SaveFormat.JPEG })).base64;
+            }
+            return (await ImageManipulator.manipulateAsync(uri, [{ resize: { width: w } }], { base64: true, compress: 0.92, format: ImageManipulator.SaveFormat.JPEG })).base64;
+          }
           const SIM = ['Tesco', "Sainsbury's", 'Argos', 'Boots', 'CVS', 'Target', 'Walgreens', 'Walmart', 'Starbucks', 'Żabka', 'Biedronka'];
 
           // ---------- colours (same tokens as the HTML prototype) ----------
@@ -654,6 +676,7 @@ jobs:
                   <Text style={{ paddingTop: 12, paddingHorizontal: 14, paddingBottom: 4, color: t.sub, fontSize: 13 }}>Geofencing simulator (needs Pro and Geo-alerts ON)</Text>
                   <Sim onPress={() => cards.length ? notifyNear([cards[0].name]) : say('Add a card first')}>🔔 Send test notification</Sim>
                   <Sim onPress={showLog}>📜 Show geo log</Sim>
+                  <Sim onPress={async () => Alert.alert('Scan log', (JSON.parse((await AsyncStorage.getItem('scanLog')) || '[]')).slice(0, 14).join('\n') || '(empty)')}>📷 Show scan log</Sim>
                   <Sim onPress={() => setOnb(true)}>👋 Show welcome screens again</Sim>
                   {SIM.map(n => <Sim key={n} onPress={() => simulate(n)}>📍 Simulate: Walking into {n}</Sim>)}
                   <Sim onPress={simulateMall} last>🏬 Simulate: Mall with several of my stores</Sim>
@@ -941,23 +964,39 @@ jobs:
               const qr = r.type === 'qr' || r.type === 256; setNum(cleanScan(r.data)); setType(qr ? 'qr' : 'barcode'); setFmt(qr ? null : FMT[r.type] || null);
               say('Code detected ✓');
             };
-            const gotScan = useRef(false);   // the camera reports the same code many times per second: take the first one
-            const openScanner = async () => { if (!perm?.granted && !(await askCam()).granted) return; gotScan.current = false; setScanning(true); };
+            const gotScan = useRef(false);
+            const reads = useRef({});        // the same code must be read several times before we trust it
+            const [torch, setTorch] = useState(false);
+            const openScanner = async () => { if (!perm?.granted && !(await askCam()).granted) return; gotScan.current = false; reads.current = {}; setScanning(true); };
+            const onCamera = raw => {
+              if (gotScan.current) return;
+              const r = normScan(raw);
+              if (!plausible(r)) return;
+              const key = r.type + '|' + r.data, n = (reads.current[key] || 0) + 1;
+              reads.current[key] = n;
+              if (n < (CHECKED.includes(r.type) ? 2 : 4)) return;
+              gotScan.current = true; setScanning(false); setTorch(false);
+              scanLog(`camera ${r.type} ${r.data.slice(0, 40)} (read ${n}x)`);
+              apply(r);
+            };
             const importImage = async () => {
               const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
               if (res.canceled) return;
-              const uri = res.assets[0].uri;
+              const asset = res.assets[0], uri = asset.uri;
               say('Reading code…');
+              await scanLog(`photo ${asset.width}x${asset.height}`);
               let r = null;
-              try { r = (await CameraView.scanFromURLAsync(uri, SCAN_TYPES))[0] || null; } catch (e) {}
-              // the system scanner often finds nothing in gallery photos: read the picture ourselves at a few sizes
+              try { const all = (await CameraView.scanFromURLAsync(uri, SCAN_TYPES)).map(normScan).filter(plausible); r = all[0] || null; await scanLog(`system reader: ${r ? r.type + ' ' + r.data.slice(0, 30) : 'nothing'}`); }
+              catch (e) { await scanLog('system reader error: ' + String(e.message || e).slice(0, 80)); }
+              // the system reader often finds nothing in gallery photos: read the picture ourselves at a few sizes
               if (!r) for (const w of [1200, 1800, 800]) {
                 try {
-                  const m = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: w } }], { base64: true, compress: 0.92, format: ImageManipulator.SaveFormat.JPEG });
+                  const b64 = await resizedJpeg(uri, Math.min(w, asset.width || w));
                   await new Promise(ok => setTimeout(ok, 30));      // let the "Reading code…" toast draw first
-                  r = decodeJpegBase64(m.base64);
-                  if (r) break;
-                } catch (e) {}
+                  const d = normScan(decodeJpegBase64(b64));
+                  await scanLog(`own reader ${w}px: ${d ? d.type + ' ' + d.data.slice(0, 30) : 'nothing'}`);
+                  if (plausible(d)) { r = d; break; }
+                } catch (e) { await scanLog(`own reader ${w}px error: ` + String(e.message || e).slice(0, 80)); }
               }
               apply(r);
             };
@@ -968,9 +1007,15 @@ jobs:
             if (scanning) return (
               <Modal visible animationType="slide" statusBarTranslucent onRequestClose={() => setScanning(false)}>
                 <View style={{ flex: 1, backgroundColor: '#000' }}>
-                  <CameraView style={{ flex: 1 }} barcodeScannerSettings={{ barcodeTypes: SCAN_TYPES }} onBarcodeScanned={r => { if (gotScan.current) return; gotScan.current = true; setScanning(false); apply(r); }} />
-                  <Text onPress={() => setScanning(false)} style={{ position: 'absolute', top: 60, right: 20, color: '#fff', fontSize: 17, fontWeight: '700' }}>Cancel</Text>
-                  <Text style={{ position: 'absolute', bottom: 60, width: '100%', textAlign: 'center', color: '#fff', fontSize: 15 }}>Point the camera at the card’s code</Text>
+                  <CameraView style={{ flex: 1 }} enableTorch={torch} autofocus="on" barcodeScannerSettings={{ barcodeTypes: CAM_TYPES }} onBarcodeScanned={onCamera} />
+                  <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={{ width: '82%', aspectRatio: 1.6, borderRadius: 24, borderWidth: 3, borderColor: '#ffffff', boxShadow: '0px 0px 0px 2000px rgba(0,0,0,0.45)' }} />
+                  </View>
+                  <Text onPress={() => { setScanning(false); setTorch(false); }} style={{ position: 'absolute', top: 60, right: 20, color: '#fff', fontSize: 17, fontWeight: '700' }}>Cancel</Text>
+                  <Pressable onPress={() => setTorch(v => !v)} style={{ position: 'absolute', top: 52, left: 20, backgroundColor: torch ? '#ffd166' : 'rgba(255,255,255,0.2)', borderRadius: 99, paddingVertical: 8, paddingHorizontal: 14 }}>
+                    <B style={{ color: torch ? '#14141a' : '#fff', fontSize: 14 }}>{torch ? 'Light on' : 'Light'}</B>
+                  </Pressable>
+                  <Text style={{ position: 'absolute', bottom: 70, width: '100%', textAlign: 'center', color: '#fff', fontSize: 15, paddingHorizontal: 30 }}>Hold the card’s code inside the frame and keep the phone still</Text>
                 </View>
               </Modal>
             );
