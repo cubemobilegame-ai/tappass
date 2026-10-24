@@ -1795,8 +1795,7 @@ jobs:
                   "POST_NOTIFICATIONS",
                   "CAMERA",
                   "FOREGROUND_SERVICE",
-                  "FOREGROUND_SERVICE_LOCATION",
-                  "com.android.vending.BILLING"
+                  "FOREGROUND_SERVICE_LOCATION"
                 ],
                 "adaptiveIcon": {
                   "foregroundImage": "./assets/adaptive-icon.png",
@@ -1813,6 +1812,7 @@ jobs:
                   }
                 ],
                 "expo-notifications",
+                "expo-iap",
                 [
                   "expo-camera",
                   {
@@ -1880,7 +1880,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator expo-iap @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
           npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/plus-jakarta-sans @zxing/library jpeg-js
 
       - name: Self-test photo barcode reader
