@@ -1168,15 +1168,13 @@ jobs:
           import * as TaskManager from 'expo-task-manager';
           import * as Location from 'expo-location';
           import * as Notifications from 'expo-notifications';
-          import * as BackgroundTask from 'expo-background-task';
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import { Platform } from 'react-native';
           import { geoNames, cardsForLabel } from './stores';
           import STORE_DB from './assets/storedb.json';   // built in CI from All the Places (official store locators)
 
           export const TASK = 'TAPPASS_GEOFENCE';
-          export const LOC_TASK = 'TAPPASS_LOCATION';
-          export const WATCH_TASK = 'TAPPASS_WATCHDOG';   // Android WorkManager job: survives reboots, app updates and the app being killed   // Android: location updates in a foreground service (survives battery savers)
+          export const LOC_TASK = 'TAPPASS_LOCATION';   // Android: location updates in a foreground service (survives battery savers)
           const CHANNEL = 'store-alerts-v2';   // new id: Android never changes the sound of an existing channel
           // Store locations: 1) the built-in database (works offline, no server needed),
           // 2) only for chains missing there: OpenStreetMap via the Overpass API (several public servers in turn).
@@ -1334,31 +1332,6 @@ jobs:
             const last = await load('lastLoc');
             const ago = last ? `${Math.round((Date.now() - last.t) / 60000)} min ago` : 'never';
             await glog(`${why}: service ${fg ? 'on' : 'OFF'}, geofences ${gf ? 'on' : 'OFF'}, last GPS ${ago}`);
-          }
-
-          // 3) Watchdog every ~15 min (WorkManager). Android restarts it after a reboot or an app update,
-          //    when the foreground service and geofences are gone until the app is opened again.
-          TaskManager.defineTask(WATCH_TASK, async () => {
-            try {
-              await checkWatch('watchdog');
-              const cards = (await load('cards')) || [];
-              if (cards.length && (await AsyncStorage.getItem('geo')) === '1' && (await AsyncStorage.getItem('pro')) === '1') {
-                const last = await load('lastLoc');
-                const p = await position().catch(() => null);
-                // the user has moved but the watcher reported nothing: it was stopped -> restart it
-                if (p && last && Date.now() - last.t > 10 * 60e3 && dist(p.latitude, p.longitude, last.lat, last.lng) > 300) {
-                  await glog('watchdog: watcher silent, restarting');
-                  await AsyncStorage.removeItem('locVersion');
-                }
-                await refreshFromTask('watchdog');
-              }
-            } catch (e) { await glog('watchdog error ' + String(e.message || e).slice(0, 80)); }
-            return BackgroundTask.BackgroundTaskResult.Success;
-          });
-          async function startWatchdog() {
-            if (Platform.OS !== 'android' || (await TaskManager.isTaskRegisteredAsync(WATCH_TASK))) return;
-            await BackgroundTask.registerTaskAsync(WATCH_TASK, { minimumInterval: 15 });
-            await glog('watchdog on');
           }
 
           export async function askPermissions() {
@@ -1533,7 +1506,6 @@ jobs:
               const reliable = reliableOpt ?? ((await AsyncStorage.getItem('reliable')) !== '0');
               // start the background watcher first: it keeps retrying even if this lookup fails
               if (reliable) await startLoc().catch(e => glog('fg service failed ' + String(e.message || e).slice(0, 90))); else await stopLoc();
-              await startWatchdog().catch(e => glog('watchdog failed ' + String(e.message || e).slice(0, 80)));
               const { latitude: lat, longitude: lng } = await position();
               const { stores: all, stale } = await getStores(cards, lat, lng);
               const sorted = all.map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d);
@@ -1561,7 +1533,6 @@ jobs:
           export async function stopGeo() {
             if (await Location.hasStartedGeofencingAsync(TASK)) await Location.stopGeofencingAsync(TASK);
             await stopLoc();
-            if (await TaskManager.isTaskRegisteredAsync(WATCH_TASK)) await BackgroundTask.unregisterTaskAsync(WATCH_TASK).catch(() => {});
             await AsyncStorage.multiRemove(['geoRetry', 'geo:near']);
           }
           TAPPASS_EOF
@@ -2047,7 +2018,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator expo-background-task expo-iap @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator expo-iap @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
           npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/plus-jakarta-sans @zxing/library jpeg-js
 
       - name: Self-test photo barcode reader
