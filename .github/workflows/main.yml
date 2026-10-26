@@ -43,7 +43,7 @@ jobs:
           mkdir -p assets
           cat > App.js <<'TAPPASS_EOF'
           import React, { useEffect, useRef, useState } from 'react';
-          import { ActivityIndicator, View, Text as RNText, Pressable, Modal, TextInput as RNTextInput, ScrollView, StyleSheet, Linking, Platform, useColorScheme, AppState, KeyboardAvoidingView, Alert, BackHandler } from 'react-native';
+          import { ActivityIndicator, View, Text as RNText, Pressable, Modal, TextInput as RNTextInput, ScrollView, StyleSheet, Linking, Platform, useColorScheme, AppState, KeyboardAvoidingView, Alert, BackHandler, Share } from 'react-native';
           import { StatusBar } from 'expo-status-bar';
           import { useFonts, PlusJakartaSans_400Regular, PlusJakartaSans_500Medium, PlusJakartaSans_600SemiBold, PlusJakartaSans_700Bold, PlusJakartaSans_800ExtraBold } from '@expo-google-fonts/plus-jakarta-sans';
           import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -64,7 +64,7 @@ jobs:
           import JsBarcode from 'jsbarcode';
           import { STORES, catOf, fold, cardsForLabel } from './stores';
           import * as Billing from './billing';
-          import { askPermissions, refreshGeofences, stopGeo, notifyNear, getStatus, ensureChannel, getLog } from './geo';
+          import { askPermissions, refreshGeofences, stopGeo, notifyNear, getStatus, ensureChannel, getLog, checkWatch } from './geo';
 
           // dev tools (Pro switch + geofence simulator) show in dev builds, or in any build with EXPO_PUBLIC_DEV_TOOLS=1
           const DEV_TOOLS = __DEV__ || process.env.EXPO_PUBLIC_DEV_TOOLS === '1';
@@ -385,7 +385,7 @@ jobs:
             useEffect(() => { if (!ready) return;
               AsyncStorage.multiSet([['cards', JSON.stringify(cards)], ['pro', pro ? '1' : '0'], ['geo', geo ? '1' : '0'], ['theme', theme], ['dev', dev ? '1' : '0'], ['reliable', reliable ? '1' : '0'], ['log', JSON.stringify(log)], ['list', JSON.stringify(list)]]);
             }, [cards, pro, geo, theme, dev, reliable, log, list, ready]);
-            useEffect(() => { ensureChannel().catch(() => {}); }, []);
+            useEffect(() => { ensureChannel().catch(() => {}); checkWatch('app started').catch(() => {}); }, []);
 
             const syncGeo = async () => {
               try { if (geo && pro && cards.length) await refreshGeofences(cards, reliable); else await stopGeo(); }
@@ -414,6 +414,7 @@ jobs:
             useEffect(() => {
               const sub = AppState.addEventListener('change', async s => {
                 if (s !== 'active') return;
+                await checkWatch('app opened').catch(() => {});   // log what survived in the background
                 try { const l = JSON.parse((await AsyncStorage.getItem('log')) || '[]'); setLog(l); } catch (e) {}
                 syncGeo();
                 checkHealth();
@@ -502,6 +503,10 @@ jobs:
               setGstat(await getStatus());
             };
             const showLog = async () => Alert.alert('Geo log', ((await getLog()) || ['(empty)']).slice(0, 14).join('\n'));
+            const shareLog = async () => {
+              const st = health ? `bg ${health.bg} · precise ${health.precise} · notif ${health.notif} · battery ${health.battery}` : '';
+              Share.share({ message: `TapPass geo log (${new Date().toLocaleString()})\n${st}\n\n` + ((await getLog()) || ['(empty)']).join('\n') }).catch(() => {});
+            };
             const geoOn = geo && pro;
             const geoStatus = !pro ? 'Pro feature' : !geo ? 'Off · tap to turn on' : healthIssues.length ? '⚠️ Needs attention' : !cards.length ? 'Add a card first' : !gstat ? 'Finding stores…'
               : gstat.err ? gstat.err
@@ -727,6 +732,7 @@ jobs:
                   <Text style={{ paddingTop: 12, paddingHorizontal: 14, paddingBottom: 4, color: t.sub, fontSize: 13 }}>Geofencing simulator (needs Pro and Geo-alerts ON)</Text>
                   <Sim onPress={() => cards.length ? notifyNear([cards[0].name]) : say('Add a card first')}>🔔 Send test notification</Sim>
                   <Sim onPress={showLog}>📜 Show geo log</Sim>
+                  <Sim onPress={shareLog}>📤 Share full geo log</Sim>
                   <Sim onPress={async () => Alert.alert('Scan log', (JSON.parse((await AsyncStorage.getItem('scanLog')) || '[]')).slice(0, 14).join('\n') || '(empty)')}>📷 Show scan log</Sim>
                   <Sim onPress={() => setOnb(true)}>👋 Show welcome screens again</Sim>
                   {SIM.map(n => <Sim key={n} onPress={() => simulate(n)}>📍 Simulate: Walking into {n}</Sim>)}
@@ -1162,13 +1168,15 @@ jobs:
           import * as TaskManager from 'expo-task-manager';
           import * as Location from 'expo-location';
           import * as Notifications from 'expo-notifications';
+          import * as BackgroundTask from 'expo-background-task';
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import { Platform } from 'react-native';
           import { geoNames, cardsForLabel } from './stores';
           import STORE_DB from './assets/storedb.json';   // built in CI from All the Places (official store locators)
 
           export const TASK = 'TAPPASS_GEOFENCE';
-          export const LOC_TASK = 'TAPPASS_LOCATION';   // Android: location updates in a foreground service (survives battery savers)
+          export const LOC_TASK = 'TAPPASS_LOCATION';
+          export const WATCH_TASK = 'TAPPASS_WATCHDOG';   // Android WorkManager job: survives reboots, app updates and the app being killed   // Android: location updates in a foreground service (survives battery savers)
           const CHANNEL = 'store-alerts-v2';   // new id: Android never changes the sound of an existing channel
           // Store locations: 1) the built-in database (works offline, no server needed),
           // 2) only for chains missing there: OpenStreetMap via the Overpass API (several public servers in turn).
@@ -1299,6 +1307,7 @@ jobs:
             if (!data?.locations?.length) return;
             const { latitude: lat, longitude: lng, accuracy } = data.locations[data.locations.length - 1].coords;
             const acc = Math.min(Math.round(accuracy || 0), 100);
+            await save('lastLoc', { t: Date.now(), lat, lng });   // heartbeat: proves the background watcher is alive
             const cache = await load('geo:near');           // stores around the last refresh point
             const retry = await load('geoRetry');
             const due = retry ? Date.now() >= retry.at : !cache;
@@ -1315,6 +1324,42 @@ jobs:
             await glog(`loc ±${acc} m${best ? `, nearest ${best.name} ${Math.round(best.d)} m` : ''}`);
             for (const n of near) await alertCard(n);
           });
+
+          // What is running right now? Written to the log when the app opens and by the watchdog,
+          // so one log tells whether Android stopped the background watcher.
+          export async function checkWatch(why) {
+            if (Platform.OS !== 'android') return;
+            const fg = await Location.hasStartedLocationUpdatesAsync(LOC_TASK).catch(() => null);
+            const gf = await Location.hasStartedGeofencingAsync(TASK).catch(() => null);
+            const last = await load('lastLoc');
+            const ago = last ? `${Math.round((Date.now() - last.t) / 60000)} min ago` : 'never';
+            await glog(`${why}: service ${fg ? 'on' : 'OFF'}, geofences ${gf ? 'on' : 'OFF'}, last GPS ${ago}`);
+          }
+
+          // 3) Watchdog every ~15 min (WorkManager). Android restarts it after a reboot or an app update,
+          //    when the foreground service and geofences are gone until the app is opened again.
+          TaskManager.defineTask(WATCH_TASK, async () => {
+            try {
+              await checkWatch('watchdog');
+              const cards = (await load('cards')) || [];
+              if (cards.length && (await AsyncStorage.getItem('geo')) === '1' && (await AsyncStorage.getItem('pro')) === '1') {
+                const last = await load('lastLoc');
+                const p = await position().catch(() => null);
+                // the user has moved but the watcher reported nothing: it was stopped -> restart it
+                if (p && last && Date.now() - last.t > 10 * 60e3 && dist(p.latitude, p.longitude, last.lat, last.lng) > 300) {
+                  await glog('watchdog: watcher silent, restarting');
+                  await AsyncStorage.removeItem('locVersion');
+                }
+                await refreshFromTask('watchdog');
+              }
+            } catch (e) { await glog('watchdog error ' + String(e.message || e).slice(0, 80)); }
+            return BackgroundTask.BackgroundTaskResult.Success;
+          });
+          async function startWatchdog() {
+            if (Platform.OS !== 'android' || (await TaskManager.isTaskRegisteredAsync(WATCH_TASK))) return;
+            await BackgroundTask.registerTaskAsync(WATCH_TASK, { minimumInterval: 15 });
+            await glog('watchdog on');
+          }
 
           export async function askPermissions() {
             await ensureChannel();
@@ -1455,13 +1500,14 @@ jobs:
               if ((await AsyncStorage.getItem('locVersion')) === LOC_VERSION) return;
               await Location.stopLocationUpdatesAsync(LOC_TASK);
             }
-            await AsyncStorage.setItem('locVersion', LOC_VERSION);
             await Location.startLocationUpdatesAsync(LOC_TASK, {
               // real GPS every ~10 s / 25 m: "balanced" (Wi-Fi/cell) mode gave almost no updates with the screen off
               accuracy: Location.Accuracy.High, distanceInterval: 25, timeInterval: 10000, deferredUpdatesInterval: 0,
               pausesUpdatesAutomatically: false,
               foregroundService: { notificationTitle: 'TapPass', notificationBody: 'Watching for your stores nearby', notificationColor: '#6f7285' },   // quiet grey, not brand purple
             });
+            await AsyncStorage.setItem('locVersion', LOC_VERSION);   // only after a successful start, so a failed start is retried
+            await glog('watcher started');
           }
           async function stopLoc() {
             if (await Location.hasStartedLocationUpdatesAsync(LOC_TASK)) await Location.stopLocationUpdatesAsync(LOC_TASK);
@@ -1486,7 +1532,8 @@ jobs:
             try {
               const reliable = reliableOpt ?? ((await AsyncStorage.getItem('reliable')) !== '0');
               // start the background watcher first: it keeps retrying even if this lookup fails
-              if (reliable) await startLoc().catch(e => glog('fg service failed ' + e.message)); else await stopLoc();
+              if (reliable) await startLoc().catch(e => glog('fg service failed ' + String(e.message || e).slice(0, 90))); else await stopLoc();
+              await startWatchdog().catch(e => glog('watchdog failed ' + String(e.message || e).slice(0, 80)));
               const { latitude: lat, longitude: lng } = await position();
               const { stores: all, stale } = await getStores(cards, lat, lng);
               const sorted = all.map(s => ({ ...s, d: dist(lat, lng, s.lat, s.lng) })).sort((a, b) => a.d - b.d);
@@ -1514,6 +1561,7 @@ jobs:
           export async function stopGeo() {
             if (await Location.hasStartedGeofencingAsync(TASK)) await Location.stopGeofencingAsync(TASK);
             await stopLoc();
+            if (await TaskManager.isTaskRegisteredAsync(WATCH_TASK)) await BackgroundTask.unregisterTaskAsync(WATCH_TASK).catch(() => {});
             await AsyncStorage.multiRemove(['geoRetry', 'geo:near']);
           }
           TAPPASS_EOF
@@ -1999,7 +2047,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator expo-iap @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
+          npx expo install expo-location expo-task-manager expo-notifications expo-camera expo-image-picker expo-brightness expo-battery expo-image-manipulator expo-background-task expo-iap @react-native-async-storage/async-storage react-native-svg react-native-safe-area-context expo-linear-gradient expo-font expo-status-bar
           npm install react-native-qrcode-svg jsbarcode @expo-google-fonts/plus-jakarta-sans @zxing/library jpeg-js
 
       - name: Self-test photo barcode reader
