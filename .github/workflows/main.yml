@@ -63,6 +63,7 @@ jobs:
           import QRCode from 'react-native-qrcode-svg';
           import JsBarcode from 'jsbarcode';
           import { STORES, catOf, fold, cardsForLabel } from './stores';
+          import * as Billing from './billing';
           import { askPermissions, refreshGeofences, stopGeo, notifyNear, getStatus, ensureChannel, getLog } from './geo';
 
           // dev tools (Pro switch + geofence simulator) show in dev builds, or in any build with EXPO_PUBLIC_DEV_TOOLS=1
@@ -455,7 +456,35 @@ jobs:
               if (turningOn) { const h = await checkHealth(); if (!h.bg || !h.precise || !h.notif || !h.battery) setSheet('health'); }
             };
             const toggleDevPro = () => { const v = !pro; setPro(v); if (!v) setGeo(false); };
-            const restore = () => say(pro ? 'Purchases restored. TapPass Pro is active.' : 'No active subscription found.');
+            // ---- Google Play subscriptions ----
+            const [plans, setPlans] = useState(null);          // prices from Google Play
+            const [buying, setBuying] = useState(false);
+            const applyStore = r => {                          // r: true / false / null (store not reachable)
+              if (r === true) setPro(true);
+              else if (r === false && !(DEV_TOOLS && dev)) { setPro(false); setGeo(false); }   // test builds keep the dev Pro switch
+            };
+            useEffect(() => {
+              if (!ready) return;
+              Billing.hasPro().then(applyStore);
+              Billing.loadPlans().then(setPlans).catch(() => {});
+              return Billing.listen(() => { setBuying(false); setPro(true); setSheet(null); say('Welcome to TapPass Pro!'); },
+                e => { setBuying(false); say('Purchase failed: ' + String(e?.message || e).slice(0, 60)); });
+            }, [ready]);
+            const buyPlan = async () => {
+              let ps = plans;
+              if (!ps) { try { ps = await Billing.loadPlans(); setPlans(ps); } catch (e) {} }
+              const p = ps && (ps[plan] || ps.monthly || ps.yearly);
+              if (!p) return say('Google Play is not available right now. Try again later.');
+              setBuying(true);
+              try { await Billing.buy(p); } catch (e) { setBuying(false); if (e?.code !== 'user-cancelled') say('Purchase failed: ' + String(e?.message || e).slice(0, 60)); return; }
+              setTimeout(() => setBuying(false), 4000);
+            };
+            const restore = async () => {
+              say('Checking Google Play…');
+              const r = await Billing.hasPro();
+              if (r === true) { setPro(true); say('Purchases restored. TapPass Pro is active.'); }
+              else say(r === null ? 'Google Play is not available right now.' : 'No active subscription found.');
+            };
             const simulate = n => {
               if (!(pro && geo)) { if (!pro) return setSheet('pay'); return say('Turn on GPS Geo-alerts first.'); }
               const m = cardsForLabel(n, cards);
@@ -653,7 +682,7 @@ jobs:
               <Group>
                 <Row ico="star" bg="#ff9f0a" title={pro ? 'TapPass Pro' : 'Upgrade to Pro'} sub={pro ? 'Active · unlimited cards' : '14 days free, then from $2.99/month'} onPress={() => setSheet('pay')} />
                 <Row ico="refresh" bg="#007aff" title="Restore Purchases" onPress={restore} last={!pro} />
-                {pro && <Row ico="gear" bg="#8e8e93" title="Manage Subscription" sub="App Store / Google Play" onPress={() => say('Opens your store subscription settings')} last />}
+                {pro && <Row ico="gear" bg="#8e8e93" title="Manage Subscription" sub="App Store / Google Play" onPress={async () => { if (!(await Billing.manage())) say('Open Google Play → Payments & subscriptions'); }} last />}
               </Group>
               <Sec>Preferences</Sec>
               {geoRow}
@@ -717,14 +746,23 @@ jobs:
                 {[['Unlimited cards'], ['GPS Geo-alerts at your favorite stores', true], ['Cancel anytime']].map(([l, q]) => (
                   <View key={l} style={{ flexDirection: 'row', gap: 12, alignItems: 'center', paddingVertical: 7 }}><Check /><Text style={{ color: t.text, fontWeight: '600', fontSize: 16, flexShrink: 1 }}>{l}</Text>{q && <QM />}</View>))}
               </View>
-              {[['monthly', 'Monthly - $2.99 / month'], ['yearly', 'Yearly (Save 45%) - $19.99 / year']].map(([k, l]) => (
-                <Pressable key={k} onPress={() => setPlan(k)} style={{ backgroundColor: t.card, borderWidth: 2, borderColor: plan === k ? t.accent : t.line, borderRadius: 22, paddingVertical: 15, paddingHorizontal: 16, marginVertical: 10 }}>
-                  {k === 'yearly' && <View style={{ position: 'absolute', right: 14, top: -11, backgroundColor: '#ff9f0a', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 99 }}><Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>Save 45%</Text></View>}
-                  <B style={{ color: t.text, fontSize: 16 }}>{l}</B><Text style={{ color: t.sub, fontSize: 14, marginTop: 2 }}>(after 14-day free trial)</Text>
-                </Pressable>))}
-              {/* TODO: replace with RevenueCat: Purchases.purchasePackage(...) and Purchases.restorePurchases() */}
-              <Cta style={{ marginTop: 6 }} onPress={() => { setPro(true); setSheet(null); }}>Start 14-Day Free Trial</Cta>
-              <Text style={{ fontSize: 13, color: t.sub, textAlign: 'center', marginTop: 12 }}>Prototype only. No real payment is made.</Text>
+              {(() => {
+                const m = plans?.monthly, y = plans?.yearly;
+                const save = m && y && m.micros && y.micros ? Math.round((1 - y.micros / (m.micros * 12)) * 100) : 45;
+                const rows = [['monthly', 'Monthly', m ? m.price + ' / month' : '$2.99 / month', m], ['yearly', 'Yearly', y ? y.price + ' / year' : '$19.99 / year', y]];
+                const sel = plan === 'yearly' ? y : m, trial = sel ? sel.trial : true;
+                return <>
+                  {rows.map(([k, name, price, p]) => (
+                    <Pressable key={k} onPress={() => setPlan(k)} style={{ backgroundColor: t.card, borderWidth: 2, borderColor: plan === k ? t.accent : t.line, borderRadius: 22, paddingVertical: 15, paddingHorizontal: 16, marginVertical: 10 }}>
+                      {k === 'yearly' && save > 0 && <View style={{ position: 'absolute', right: 14, top: -11, backgroundColor: '#ff9f0a', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 99 }}><Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>Save {save}%</Text></View>}
+                      <B style={{ color: t.text, fontSize: 16 }}>{name} - {price}</B><Text style={{ color: t.sub, fontSize: 14, marginTop: 2 }}>{!p || p.trial ? '(after 14-day free trial)' : 'Billed ' + (k === 'yearly' ? 'yearly' : 'monthly')}</Text>
+                    </Pressable>))}
+                  <Cta style={{ marginTop: 6 }} disabled={buying} onPress={buyPlan}>{buying ? 'Opening Google Play…' : trial ? 'Start 14-Day Free Trial' : 'Subscribe'}</Cta>
+                  <Text style={{ fontSize: 12, color: t.sub, textAlign: 'center', marginTop: 12, lineHeight: 17 }}>
+                    {trial ? `Free for 14 days, then ${sel ? sel.price : (plan === 'yearly' ? '$19.99' : '$2.99')} per ${plan === 'yearly' ? 'year' : 'month'}. ` : ''}Renews automatically until cancelled. Cancel anytime in Google Play at least 24 hours before renewal.
+                  </Text>
+                </>;
+              })()}
               <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 18, marginTop: 8 }}>
                 {[['Restore Purchases', restore], ['Terms', () => say('Opens terms of use')], ['Privacy', () => setSheet('pol')]].map(([l, f]) => <Text key={l} onPress={f} style={{ color: t.accent, fontSize: 13, fontWeight: '600' }}>{l}</Text>)}
               </View>
@@ -1706,6 +1744,87 @@ jobs:
           }
           if (!ok) { console.log('::error title=Photo barcode reader::self-test failed'); process.exit(1); }
           console.log('::notice title=Photo barcode reader::self-test passed (upright + sideways EAN-13)');
+          TAPPASS_EOF
+          cat > billing.js <<'TAPPASS_EOF'
+          // Google Play subscriptions (expo-iap / Play Billing 9).
+          // Play Console: subscription "tappass_pro" with base plans "monthly" and "yearly",
+          // each with a 14-day free-trial offer for new customers.
+          import * as IAP from 'expo-iap';
+
+          export const SKU = 'tappass_pro';
+          const PACKAGE = 'com.cubemobilegames.tappass';
+          let connected = null;
+
+          async function connect() {
+            if (!connected) connected = IAP.initConnection().catch(e => { connected = null; throw e; });
+            return connected;
+          }
+
+          const micros = ph => Number(ph?.priceAmountMicros || 0);
+
+          // -> { monthly: {id, price, trial, offerToken}, yearly: {...} } or null when the store has nothing
+          export async function loadPlans() {
+            await connect();
+            const list = await IAP.fetchProducts({ skus: [SKU], type: 'subs' });
+            const p = (list || []).find(x => x.id === SKU) || (list || [])[0];
+            if (!p) return null;
+            const details = p.subscriptionOfferDetailsAndroid || [];
+            const plan = id => {
+              const offers = details.filter(o => o.basePlanId === id);
+              if (!offers.length) return null;
+              const base = offers.find(o => !o.offerId) || offers[0];
+              const trial = offers.find(o => o.offerId && (o.pricingPhases?.pricingPhaseList || []).some(ph => micros(ph) === 0));
+              const phases = base.pricingPhases?.pricingPhaseList || [];
+              const paid = phases.filter(ph => micros(ph) > 0);
+              const last = paid[paid.length - 1] || phases[phases.length - 1];
+              return { id, price: last?.formattedPrice || '', micros: micros(last), trial: !!trial, offerToken: (trial || base).offerToken };
+            };
+            const out = { monthly: plan('monthly'), yearly: plan('yearly') };
+            return out.monthly || out.yearly ? out : null;
+          }
+
+          // opens the Google Play purchase sheet; the result arrives in the listener below
+          export async function buy(plan) {
+            await connect();
+            return IAP.requestPurchase({
+              request: { google: { skus: [SKU], subscriptionOffers: [{ sku: SKU, offerToken: plan.offerToken }] }, apple: { sku: SKU } },
+              type: 'subs',
+            });
+          }
+
+          const acknowledge = async p => {
+            if (p && p.purchaseToken && p.isAcknowledgedAndroid === false) await IAP.finishTransaction({ purchase: p, isConsumable: false });
+          };
+
+          // onOk(purchase) when a subscription is bought; onErr(error) unless the user simply cancelled
+          export function listen(onOk, onErr) {
+            const a = IAP.purchaseUpdatedListener(async p => {
+              try {
+                if (p.productId !== SKU || p.purchaseState === 'pending') return;
+                await acknowledge(p);                  // must happen within 3 days or Google refunds it
+                onOk(p);
+              } catch (e) { onErr(e); }
+            });
+            const b = IAP.purchaseErrorListener(e => { if (e && e.code !== 'user-cancelled') onErr(e); });
+            return () => { a.remove(); b.remove(); };
+          }
+
+          // true / false when the store answered, null when it could not be reached
+          export async function hasPro() {
+            try {
+              await connect();
+              const purchases = await IAP.getAvailablePurchases();
+              const mine = (purchases || []).filter(p => p.productId === SKU && p.purchaseState === 'purchased');
+              for (const p of mine) await acknowledge(p).catch(() => {});
+              if (mine.length) return true;
+              const subs = await IAP.getActiveSubscriptions([SKU]).catch(() => []);
+              return (subs || []).some(s => s.productId === SKU && s.isActive !== false);
+            } catch (e) { return null; }
+          }
+
+          export async function manage() {
+            try { await IAP.deepLinkToSubscriptions({ skuAndroid: SKU, packageNameAndroid: PACKAGE }); return true; } catch (e) { return false; }
+          }
           TAPPASS_EOF
           cat > stores.js <<'TAPPASS_EOF'
           // [name, brand color, initial, optional letter color, loyalty programme] - original tiles, not official logos
