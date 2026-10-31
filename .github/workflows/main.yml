@@ -6,7 +6,7 @@ on:
   workflow_dispatch:          # przycisk "Run workflow"
   push:                       # zapis tego pliku (commit) od razu buduje nowy APK
     branches: [main]
-    paths: ['.github/workflows/**', 'brand/**']
+    paths: ['.github/workflows/**', 'brand/**', 'modules/**']
 
 permissions:
   contents: write             # żeby wrzucić APK do zakładki Releases
@@ -64,7 +64,7 @@ jobs:
           import JsBarcode from 'jsbarcode';
           import { STORES, catOf, fold, cardsForLabel } from './stores';
           import * as Billing from './billing';
-          import { askPermissions, refreshGeofences, stopGeo, notifyNear, getStatus, ensureChannel, getLog, checkWatch } from './geo';
+          import { askPermissions, refreshGeofences, stopGeo, notifyNear, getStatus, ensureChannel, getLog, checkWatch, pullGuard } from './geo';
 
           // dev tools (Pro switch + geofence simulator) show in dev builds, or in any build with EXPO_PUBLIC_DEV_TOOLS=1
           const DEV_TOOLS = __DEV__ || process.env.EXPO_PUBLIC_DEV_TOOLS === '1';
@@ -375,6 +375,7 @@ jobs:
             const say = m => { setToast(m); clearTimeout(toastT.current); toastT.current = setTimeout(() => setToast(''), 2600); };
 
             useEffect(() => { (async () => {
+              await checkWatch('app started').catch(() => {});  // also pulls alerts the watcher showed while the app was closed
               const k = ['cards', 'pro', 'geo', 'theme', 'dev', 'reliable', 'log', 'list', 'onb'];
               const v = await Promise.all(k.map(x => AsyncStorage.getItem(x)));
               const j = (s, d) => { try { return s ? JSON.parse(s) : d; } catch (e) { return d; } };
@@ -385,7 +386,7 @@ jobs:
             useEffect(() => { if (!ready) return;
               AsyncStorage.multiSet([['cards', JSON.stringify(cards)], ['pro', pro ? '1' : '0'], ['geo', geo ? '1' : '0'], ['theme', theme], ['dev', dev ? '1' : '0'], ['reliable', reliable ? '1' : '0'], ['log', JSON.stringify(log)], ['list', JSON.stringify(list)]]);
             }, [cards, pro, geo, theme, dev, reliable, log, list, ready]);
-            useEffect(() => { ensureChannel().catch(() => {}); checkWatch('app started').catch(() => {}); }, []);
+            useEffect(() => { ensureChannel().catch(() => {}); }, []);
 
             const syncGeo = async () => {
               try { if (geo && pro && cards.length) await refreshGeofences(cards, reliable); else await stopGeo(); }
@@ -414,13 +415,20 @@ jobs:
             useEffect(() => {
               const sub = AppState.addEventListener('change', async s => {
                 if (s !== 'active') return;
-                await checkWatch('app opened').catch(() => {});   // log what survived in the background
+                await checkWatch('app opened').catch(() => {});   // log what survived in the background (also pulls watcher events)
                 try { const l = JSON.parse((await AsyncStorage.getItem('log')) || '[]'); setLog(l); } catch (e) {}
                 syncGeo();
                 checkHealth();
               });
               return () => sub.remove();
             });
+            // tap on an alert from the native watcher: tappass://card?ids=1,2
+            useEffect(() => {
+              const open = url => { const m = /[?&]ids=([^&#]+)/.exec(url || ''); if (m) { const ids = decodeURIComponent(m[1]).split(',').filter(Boolean); if (ids.length) setPending(ids); } };
+              Linking.getInitialURL().then(open).catch(() => {});
+              const sub = Linking.addEventListener('url', e => open(e.url));
+              return () => sub.remove();
+            }, []);
             // notification tap -> open card (also on cold start)
             useEffect(() => {
               const open = r => { const ids = r?.notification.request.content.data?.cardIds; if (ids?.length) setPending(ids); };
@@ -504,6 +512,7 @@ jobs:
             };
             const showLog = async () => Alert.alert('Geo log', ((await getLog()) || ['(empty)']).slice(0, 14).join('\n'));
             const shareLog = async () => {
+              await pullGuard().catch(() => {});
               const st = health ? `bg ${health.bg} · precise ${health.precise} · notif ${health.notif} · battery ${health.battery}` : '';
               Share.share({ message: `TapPass geo log (${new Date().toLocaleString()})\n${st}\n\n` + ((await getLog()) || ['(empty)']).join('\n') }).catch(() => {});
             };
@@ -1171,7 +1180,8 @@ jobs:
           import AsyncStorage from '@react-native-async-storage/async-storage';
           import { Platform, AppState } from 'react-native';
           import { geoNames, cardsForLabel } from './stores';
-          import STORE_DB from './assets/storedb.json';   // built in CI from All the Places (official store locators)
+          import STORE_DB from './assets/storedb.json';
+          import * as Guard from './guard';   // built in CI from All the Places (official store locators)
 
           export const TASK = 'TAPPASS_GEOFENCE';
           export const LOC_TASK = 'TAPPASS_LOCATION';   // Android: location updates in a foreground service (survives battery savers)
@@ -1196,6 +1206,10 @@ jobs:
           const COOLDOWN = 4 * 3600e3;      // one alert per store per 4 h
           const BACKOFF = [30e3, 120e3, 300e3, 600e3, 900e3];   // retry after a failed lookup
           const LOCAL_RADIUS = 20000;       // m, stores taken from the built-in database around the user
+          // Android: the native watcher (foreground service) does the store check and the alert itself and comes
+          // back after reboots, app updates and Android killing the app. Geofences only wake it up.
+          const NATIVE = Platform.OS === 'android' && Guard.available;
+          export const nativeWatcher = NATIVE;
 
           Notifications.setNotificationHandler({
             handleNotification: async () => ({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false }),
@@ -1298,7 +1312,13 @@ jobs:
               if (eventType === Location.GeofencingEventType.Exit) await refreshFromTask('zone');
               return;
             }
-            if (eventType === Location.GeofencingEventType.Enter) await alertCard(region.identifier.split('::')[0]);
+            if (eventType !== Location.GeofencingEventType.Enter) return;
+            if (NATIVE) {                       // the native watcher alerts; a geofence event lets Android restart it
+              const r = Guard.start();
+              if (r) await glog('watcher restart from geofence: ' + r);
+              return;
+            }
+            await alertCard(region.identifier.split('::')[0]);
           });
 
           // 2) Android backup: location updates in a foreground service. Each position is compared with the
@@ -1338,11 +1358,52 @@ jobs:
           // so one log tells whether Android stopped the background watcher.
           export async function checkWatch(why) {
             if (Platform.OS !== 'android') return;
+            if (NATIVE) {
+              await pullGuard();
+              const st = Guard.status();
+              const ago = st && st.lastFix ? `${Math.round((Date.now() - st.lastFix) / 60000)} min ago` : 'never';
+              await glog(`${why}: watcher ${st && st.running ? 'on' : 'OFF'}${st && st.enabled ? '' : ' (disabled)'}, last GPS ${ago}`);
+              return;
+            }
             const fg = await Location.hasStartedLocationUpdatesAsync(LOC_TASK).catch(() => null);
             const gf = await Location.hasStartedGeofencingAsync(TASK).catch(() => null);
             const last = await load('lastLoc');
             const ago = last ? `${Math.round((Date.now() - last.t) / 60000)} min ago` : 'never';
             await glog(`${why}: service ${fg ? 'on' : 'OFF'}, geofences ${gf ? 'on' : 'OFF'}, last GPS ${ago}`);
+          }
+
+          // events the native watcher wrote while the app was closed -> geo log + Activity history
+          const stamp = t => (Date.now() - t > 20 * 3600e3 ? new Date(t).toLocaleString() : new Date(t).toLocaleTimeString());
+          export async function pullGuard() {
+            if (!NATIVE) return 0;
+            let ev = [];
+            try { ev = JSON.parse(Guard.takeEvents() || '[]'); } catch (e) { ev = []; }
+            if (!ev.length) return 0;
+            const gl = (await load('geoLog')) || [];
+            const act = (await load('log')) || [];
+            for (const e of ev) {                              // oldest first
+              gl.unshift(`${stamp(e.t)} ● ${e.k === 'alert' ? 'ALERT ' + e.n : e.n}`);
+              if (e.k === 'alert') act.unshift({ t: e.t, k: 'alert', n: e.n });
+            }
+            await save('geoLog', gl.slice(0, 120));
+            await save('log', act.slice(0, 200));
+            return ev.length;
+          }
+
+          // every store of the user's chains from the built-in database (whole country) + stores found online
+          function guardConfig(cards, extra) {
+            const names = [...new Set(cards.map(c => c.name))];
+            const idx = new Map(names.map((n, i) => [n, i]));
+            const pts = [], seen = new Set();
+            const add = (n, la, lo) => { const k = `${n}:${la}:${lo}`; if (seen.has(k)) return; seen.add(k); pts.push(idx.get(n), la, lo); };
+            for (const n of names) for (const a of geoNames(n)) {
+              const p = STORE_DB[a]; if (!p) continue;
+              for (let i = 0; i < p.length; i += 2) add(n, p[i], p[i + 1]);
+            }
+            for (const s of extra) if (idx.has(s.name)) add(s.name, Math.round(s.lat * 1e5), Math.round(s.lng * 1e5));
+            const ids = {};
+            for (const c of cards) (ids[c.name] = ids[c.name] || []).push(c.id);
+            return { json: JSON.stringify({ names, pts, ids, radius: RADIUS, cooldown: COOLDOWN }), count: pts.length / 3 };
           }
 
           // in the background: note every 15 min whether the always-on watcher is still registered
@@ -1525,7 +1586,14 @@ jobs:
             try {
               const reliable = reliableOpt ?? ((await AsyncStorage.getItem('reliable')) !== '0');
               // start the background watcher first: it keeps retrying even if this lookup fails
-              if (reliable) await startLoc().catch(e => glog('fg service failed ' + String(e.message || e).slice(0, 90))); else await stopLoc();
+              if (NATIVE) await stopLoc().catch(() => {});      // old JS watcher replaced by the native one
+              else if (reliable) await startLoc().catch(e => glog('fg service failed ' + String(e.message || e).slice(0, 90))); else await stopLoc();
+              if (NATIVE) {                                  // start watching right away (built-in list + last online lookup)
+                const g = guardConfig(cards, ((await load('osm:cache')) || {}).stores || []);
+                Guard.configure(g.json);
+                const r = Guard.start();
+                if (r) await glog('watcher start: ' + r);
+              }
               const { latitude: lat, longitude: lng, accuracy } = await position();
               const margin = Math.min(Math.round(accuracy || 0), 100);
               const { stores: all, stale } = await getStores(cards, lat, lng);
@@ -1535,13 +1603,19 @@ jobs:
               const regions = stores.map(p => ({ identifier: `${p.name}::${p.lat.toFixed(4)},${p.lng.toFixed(4)}`, latitude: p.lat, longitude: p.lng, radius: RADIUS, notifyOnEnter: true, notifyOnExit: false }));
               regions.push({ identifier: REFRESH_ID, latitude: lat, longitude: lng, radius: REFRESH_RADIUS, notifyOnEnter: false, notifyOnExit: true });
               await Location.startGeofencingAsync(TASK, regions);
+              if (NATIVE) {
+                const g = guardConfig(cards, all);
+                Guard.configure(g.json);
+                const r = Guard.start();
+                if (r) await glog('watcher start: ' + r);
+              }
               const fresh = [];
-              for (const n of new Set(stores.filter(s => s.d <= RADIUS + margin).map(s => s.name))) {
+              for (const n of NATIVE ? [] : new Set(stores.filter(s => s.d <= RADIUS + margin).map(s => s.name))) {
                 const key = 'last:' + n;
                 if (Date.now() - Number((await AsyncStorage.getItem(key)) || 0) >= COOLDOWN) { await AsyncStorage.setItem(key, String(Date.now())); fresh.push(n); }
               }
-              if (fresh.length) await notifyNear(fresh);
-              await glog(`registered ${stores.length} stores${stores[0] ? ', nearest ' + stores[0].name + ' ' + Math.round(stores[0].d) + ' m' : ''}${reliable ? ' +fg' : ''}${stale ? ' (saved list: ' + stale + ')' : ''}`);
+              if (fresh.length && !NATIVE) await notifyNear(fresh);   // native watcher alerts on its first GPS fix
+              await glog(`registered ${stores.length} stores${stores[0] ? ', nearest ' + stores[0].name + ' ' + Math.round(stores[0].d) + ' m' : ''}${NATIVE ? ' +native' : reliable ? ' +fg' : ''}${stale ? ' (saved list: ' + stale + ')' : ''}`);
               await setStatus({ count: stores.length, near: stores.filter(s => s.d <= 1000).length, stale: stale || null, nearest: stores[0] ? { name: stores[0].name, d: Math.round(stores[0].d) } : null });
               return stores.length;
             } catch (e) {
@@ -1554,6 +1628,7 @@ jobs:
           export async function stopGeo() {
             if (await Location.hasStartedGeofencingAsync(TASK)) await Location.stopGeofencingAsync(TASK);
             await stopLoc();
+            if (NATIVE) Guard.stop();
             await AsyncStorage.multiRemove(['geoRetry', 'geo:near']);
           }
           TAPPASS_EOF
@@ -1866,6 +1941,25 @@ jobs:
             try { await IAP.deepLinkToSubscriptions({ skuAndroid: SKU, packageNameAndroid: PACKAGE }); return true; } catch (e) { return false; }
           }
           TAPPASS_EOF
+          cat > guard.js <<'TAPPASS_EOF'
+          // Android always-on store watcher (native module in modules/tappass-guard).
+          // Falls back to the old JS watcher when the native module is missing (e.g. iOS).
+          import { Platform } from 'react-native';
+
+          let M = null;
+          if (Platform.OS === 'android') {
+            try { M = require('expo').requireOptionalNativeModule('TapPassGuard'); } catch (e) { M = null; }
+            if (!M) { try { M = require('expo-modules-core').requireOptionalNativeModule('TapPassGuard'); } catch (e) { M = null; } }
+          }
+
+          export const available = !!M;
+          const safe = (f, fallback) => { try { return f(); } catch (e) { return fallback === undefined ? 'error: ' + String(e?.message || e).slice(0, 80) : fallback; } };
+          export const configure = json => (M ? safe(() => M.configure(json)) : false);
+          export const start = () => (M ? safe(() => M.start()) : 'not available');
+          export const stop = () => (M ? safe(() => M.stop()) : false);
+          export const status = () => (M ? safe(() => M.status(), null) : null);
+          export const takeEvents = () => (M ? safe(() => M.takeEvents(), '[]') : '[]');
+          TAPPASS_EOF
           cat > stores.js <<'TAPPASS_EOF'
           // [name, brand color, initial, optional letter color, loyalty programme] - original tiles, not official logos
           export const STORES = [
@@ -1954,7 +2048,8 @@ jobs:
                   "POST_NOTIFICATIONS",
                   "CAMERA",
                   "FOREGROUND_SERVICE",
-                  "FOREGROUND_SERVICE_LOCATION"
+                  "FOREGROUND_SERVICE_LOCATION",
+                  "RECEIVE_BOOT_COMPLETED"
                 ],
                 "adaptiveIcon": {
                   "foregroundImage": "./assets/adaptive-icon.png",
@@ -2058,6 +2153,14 @@ jobs:
 
       - name: Generate native Android project
         run: npx expo prebuild --platform android --clean
+
+      - name: Check native store watcher is linked
+        run: |
+          if npx expo-modules-autolinking resolve --platform android | grep -q tappass-guard; then
+            echo "::notice title=Store watcher::native module modules/tappass-guard is linked"
+          else
+            echo "::error title=Store watcher::modules/tappass-guard was not linked"; exit 1
+          fi
 
       - name: Decode keystore (only if secret exists)
         if: env.HAS_KEYSTORE == 'true'

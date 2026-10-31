@@ -1,0 +1,7 @@
+{
+  "name": "tappass-guard",
+  "version": "1.0.0",
+  "description": "TapPass always-on store watcher for Android (foreground service, restarts after reboot and app updates)",
+  "main": "index.js",
+  "private": true
+}
