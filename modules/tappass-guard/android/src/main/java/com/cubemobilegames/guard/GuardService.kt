@@ -36,7 +36,7 @@ import kotlin.math.sqrt
 class GuardService : Service() {
   companion object {
     private const val WATCH_ID = 7301
-    private const val NEAR_ZONE = 1500.0          // m: closer than this to a store -> fast GPS
+    private const val NEAR_ZONE = 3000.0          // m: closer than this to a store -> fast GPS
     @Volatile var running = false
     @Volatile var mode = -1                       // 0 = far (slow), 1 = near (fast)
     @Volatile var instance: GuardService? = null
@@ -123,11 +123,13 @@ class GuardService : Service() {
   private fun request(m: Int) {
     val c = client ?: LocationServices.getFusedLocationProviderClient(this).also { client = it }
     val req = if (m == 1)
-      LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10_000L)
-        .setMinUpdateIntervalMillis(5_000L).setMinUpdateDistanceMeters(10f).build()
+      LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 4_000L)
+        .setMinUpdateIntervalMillis(2_000L).setMinUpdateDistanceMeters(0f)
+        .setMaxUpdateDelayMillis(0L).setWaitForAccurateLocation(false).build()
     else
-      LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 60_000L)
-        .setMinUpdateIntervalMillis(30_000L).setMinUpdateDistanceMeters(50f).build()
+      LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 30_000L)
+        .setMinUpdateIntervalMillis(15_000L).setMinUpdateDistanceMeters(30f)
+        .setMaxUpdateDelayMillis(0L).setWaitForAccurateLocation(false).build()
     try {
       c.removeLocationUpdates(callback)
       c.requestLocationUpdates(req, callback, Looper.getMainLooper())
@@ -171,7 +173,10 @@ class GuardService : Service() {
     }
 
     val want = if (best < NEAR_ZONE) 1 else 0
-    if (want != mode) request(want)
+    if (want != mode) {
+      if (want == 1 && bestName.isNotEmpty()) Guard.log(this, "log", "fast GPS on: $bestName ${best.toInt()} m away")
+      request(want)
+    }
 
     if ((best < 500 && now - lastLog > 30_000) || now - lastLog > 15 * 60_000) {
       lastLog = now
@@ -185,6 +190,7 @@ class GuardService : Service() {
     val e = p.edit()
     fresh.forEach { e.putLong("last:$it", now) }
     e.apply()
+    Guard.log(this, "log", "alert at ${best.toInt()} m (±${acc.toInt()} m)")
     fresh.forEach { Guard.log(this, "alert", it) }
     alert(fresh)
   }
