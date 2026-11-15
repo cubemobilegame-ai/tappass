@@ -459,6 +459,12 @@ jobs:
             const delCard = c => confirm('Delete this card?', `“${c.name}” will be removed from this device.`, 'Delete', () => { logEvt('removed', c.name); setCards(cs => cs.filter(x => x.id !== c.id)); setFull(null); });
             const toggleGeo = async () => {
               if (!pro) return setSheet('pay');
+              // Google Play policy: prominent disclosure before asking for location (incl. background)
+              if (!geo && !(await new Promise(res => Alert.alert(
+                'Store alerts use your location',
+                'TapPass collects location data to show your loyalty card when you arrive at a store whose card you saved, even when the app is closed or not in use.\n\nOn the next screens, choose “Allow all the time”. Your location is used only for store alerts and is never sold or used for ads. You can turn alerts off at any time.',
+                [{ text: 'Not now', style: 'cancel', onPress: () => res(false) }, { text: 'Continue', onPress: () => res(true) }],
+                { cancelable: true, onDismiss: () => res(false) })))) return;
               if (!geo && !(await askPermissions())) return Alert.alert('Permission needed', 'Allow location "Always" (Allow all the time) and notifications in system settings.', [{ text: 'Cancel' }, { text: 'Open settings', onPress: () => Linking.openSettings() }]);
               const turningOn = !geo;
               setGeo(!geo);
